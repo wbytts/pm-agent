@@ -298,7 +298,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
     }
 
     pub fn get_enable_install_telemetry(&self) -> bool {
-        self.get_bool("enableInstallTelemetry").unwrap_or(false)
+        self.get_bool("enableInstallTelemetry").unwrap_or(true)
     }
 
     pub fn get_http_idle_timeout_ms(&self) -> u64 {

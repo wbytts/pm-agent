@@ -79,6 +79,12 @@ mod tests {
     }
 
     #[test]
+    fn defaults_to_enabled_like_pi_settings() {
+        let manager = SettingsManager::in_memory(json!({}));
+        assert!(is_install_telemetry_enabled(&manager, None));
+    }
+
+    #[test]
     fn attribution_headers_match_pi_sdk_provider_rules() {
         let headers = attribution_headers(
             "opencode-go",
