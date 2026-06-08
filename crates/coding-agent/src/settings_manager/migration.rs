@@ -1,4 +1,6 @@
 use serde_json::{Map, Value};
+use std::fs;
+use std::path::Path;
 
 pub fn migrate_settings(mut settings: Value) -> Value {
     let object = object_mut(&mut settings);
@@ -23,6 +25,26 @@ pub fn migrate_settings(mut settings: Value) -> Value {
     migrate_legacy_skills(object);
     migrate_retry_max_delay(object);
     settings
+}
+
+pub fn migrate_commands_to_prompts(base_dir: impl AsRef<Path>) -> Result<bool, String> {
+    let base_dir = base_dir.as_ref();
+    let commands_dir = base_dir.join("commands");
+    let prompts_dir = base_dir.join("prompts");
+
+    if !commands_dir.exists() || prompts_dir.exists() {
+        return Ok(false);
+    }
+
+    fs::rename(&commands_dir, &prompts_dir)
+        .map(|_| true)
+        .map_err(|error| {
+            format!(
+                "迁移 commands/ 到 prompts/ 失败：{} -> {}：{error}",
+                commands_dir.display(),
+                prompts_dir.display()
+            )
+        })
 }
 
 fn migrate_legacy_skills(object: &mut Map<String, Value>) {

@@ -8,7 +8,7 @@ mod storage;
 mod types;
 
 pub use merge::deep_merge_settings;
-pub use migration::migrate_settings;
+pub use migration::{migrate_commands_to_prompts, migrate_settings};
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
     BranchSummarySettings, CompactionSettings, ImageSettings, ProviderRetrySettings, RetrySettings,
@@ -546,11 +546,24 @@ fn object_mut(value: &mut Value) -> &mut Map<String, Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pm-agent-settings-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+        dir
     }
 
     #[test]
@@ -572,6 +585,39 @@ mod tests {
         assert_eq!(migrated["enableSkillCommands"], false);
         assert_eq!(migrated["skills"][0], "/skills");
         assert_eq!(migrated["retry"]["provider"]["maxRetryDelayMs"], 1234);
+    }
+
+    #[test]
+    fn migrates_commands_directory_to_prompts_like_pi() {
+        let dir = temp_dir("commands-to-prompts");
+        let commands_dir = dir.join("commands");
+        let prompts_dir = dir.join("prompts");
+        std::fs::create_dir_all(&commands_dir).expect("commands dir should be created");
+        std::fs::write(commands_dir.join("review.md"), "review")
+            .expect("command prompt should be written");
+
+        assert!(migrate_commands_to_prompts(&dir).expect("migration should succeed"));
+
+        assert!(!commands_dir.exists());
+        assert!(prompts_dir.join("review.md").exists());
+    }
+
+    #[test]
+    fn keeps_commands_when_prompts_already_exists_like_pi() {
+        let dir = temp_dir("commands-to-prompts-existing");
+        let commands_dir = dir.join("commands");
+        let prompts_dir = dir.join("prompts");
+        std::fs::create_dir_all(&commands_dir).expect("commands dir should be created");
+        std::fs::create_dir_all(&prompts_dir).expect("prompts dir should be created");
+        std::fs::write(commands_dir.join("legacy.md"), "legacy")
+            .expect("legacy command should be written");
+        std::fs::write(prompts_dir.join("current.md"), "current")
+            .expect("current prompt should be written");
+
+        assert!(!migrate_commands_to_prompts(&dir).expect("migration should succeed"));
+
+        assert!(commands_dir.join("legacy.md").exists());
+        assert!(prompts_dir.join("current.md").exists());
     }
 
     #[test]
