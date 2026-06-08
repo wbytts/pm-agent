@@ -173,14 +173,17 @@ fn install_git_steps(
         .parent()
         .map(display_path)
         .unwrap_or_default();
-    let mut steps = vec![
-        PackageCommandStep {
+    let mut steps = Vec::new();
+    if scope != SourceScope::Temporary {
+        steps.push(PackageCommandStep {
             command: "ensure_git_root".to_string(),
             args: vec![display_path(git_install_root(
                 agent_dir, cwd, source, scope,
             ))],
             cwd: None,
-        },
+        });
+    }
+    steps.extend([
         PackageCommandStep {
             command: "ensure_dir".to_string(),
             args: vec![target_parent],
@@ -191,7 +194,7 @@ fn install_git_steps(
             args: vec!["clone".to_string(), source.repo.clone(), target_dir.clone()],
             cwd: None,
         },
-    ];
+    ]);
     if let Some(reference) = &source.reference {
         steps.push(PackageCommandStep {
             command: "git".to_string(),
@@ -472,6 +475,31 @@ mod tests {
                 "pi-extensions/git-github.com/338a1076/user/repo"
             ))
         );
+    }
+
+    #[test]
+    fn temporary_git_clone_does_not_ensure_git_root_like_pi() {
+        let plan = plan_install(
+            "/agent",
+            "/work",
+            "git:https://github.com/user/repo",
+            SourceScope::Temporary,
+            None,
+        );
+
+        assert_eq!(plan.steps[0].command, "ensure_dir");
+        assert!(
+            std::path::Path::new(&plan.steps[0].args[0]).ends_with(std::path::Path::new(
+                "pi-extensions/git-github.com/338a1076/user"
+            ))
+        );
+        assert_eq!(plan.steps[1].command, "git");
+        assert_eq!(plan.steps[1].args[0], "clone");
+        assert_eq!(plan.steps[2].command, "run_if_package_json");
+        assert!(!plan
+            .steps
+            .iter()
+            .any(|step| step.command == "ensure_git_root"));
     }
 
     #[test]
