@@ -515,12 +515,18 @@ pub fn matches_key(data: &str, key_id: &str) -> bool {
             }
         },
         "backspace" => match modifier {
-            0 => data == "\x7f" || data == "\x08" || matches_kitty(data, 127, 0),
+            0 => {
+                matches_raw_backspace(data, 0)
+                    || matches_kitty(data, 127, 0)
+                    || matches_modify_other_keys(data, 127, 0)
+            }
             MOD_ALT => {
                 data == "\x1b\x7f" || data == "\x1b\x08" || matches_kitty(data, 127, MOD_ALT)
             }
             MOD_CTRL => {
-                matches_kitty(data, 127, MOD_CTRL) || matches_modify_other_keys(data, 127, MOD_CTRL)
+                matches_raw_backspace(data, MOD_CTRL)
+                    || matches_kitty(data, 127, MOD_CTRL)
+                    || matches_modify_other_keys(data, 127, MOD_CTRL)
             }
             _ => {
                 matches_kitty(data, 127, modifier) || matches_modify_other_keys(data, 127, modifier)
@@ -863,6 +869,43 @@ fn matches_modify_other_keys(data: &str, expected_codepoint: i32, expected_modif
     parsed.codepoint == expected_codepoint && parsed.modifier == expected_modifier
 }
 
+fn is_windows_terminal_session() -> bool {
+    std::env::var_os("WT_SESSION").is_some()
+        && std::env::var_os("SSH_CONNECTION").is_none()
+        && std::env::var_os("SSH_CLIENT").is_none()
+        && std::env::var_os("SSH_TTY").is_none()
+}
+
+fn matches_raw_backspace(data: &str, expected_modifier: u8) -> bool {
+    matches_raw_backspace_with_env(
+        data,
+        expected_modifier,
+        is_windows_terminal_session(),
+        std::env::var_os("SSH_CONNECTION").is_some()
+            || std::env::var_os("SSH_CLIENT").is_some()
+            || std::env::var_os("SSH_TTY").is_some(),
+    )
+}
+
+fn matches_raw_backspace_with_env(
+    data: &str,
+    expected_modifier: u8,
+    windows_terminal: bool,
+    ssh_session: bool,
+) -> bool {
+    if data == "\x7f" {
+        return expected_modifier == 0;
+    }
+    if data != "\x08" {
+        return false;
+    }
+    if windows_terminal && !ssh_session {
+        expected_modifier == MOD_CTRL
+    } else {
+        expected_modifier == 0
+    }
+}
+
 fn format_kitty_key(parsed: KittySequence) -> Option<String> {
     format_key_name_for_codepoint(parsed.codepoint, parsed.modifier).or_else(|| {
         parsed
@@ -1076,6 +1119,18 @@ mod tests {
         assert!(matches_key("\r", "enter"));
         assert!(matches_key("\x7f", "backspace"));
         assert!(matches_key("\x03", "ctrl+c"));
+    }
+
+    #[test]
+    fn raw_backspace_uses_pi_windows_terminal_ctrl_backspace_heuristic() {
+        assert!(matches_raw_backspace_with_env(
+            "\x08", MOD_CTRL, true, false
+        ));
+        assert!(!matches_raw_backspace_with_env("\x08", 0, true, false));
+        assert!(matches_raw_backspace_with_env("\x08", 0, true, true));
+        assert!(!matches_raw_backspace_with_env(
+            "\x08", MOD_CTRL, true, true
+        ));
     }
 
     #[test]
