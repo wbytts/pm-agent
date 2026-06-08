@@ -8,7 +8,7 @@ mod storage;
 mod types;
 
 pub use merge::deep_merge_settings;
-pub use migration::{migrate_commands_to_prompts, migrate_settings};
+pub use migration::{migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_settings};
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
     BranchSummarySettings, CompactionSettings, ImageSettings, ProviderRetrySettings, RetrySettings,
@@ -618,6 +618,93 @@ mod tests {
 
         assert!(commands_dir.join("legacy.md").exists());
         assert!(prompts_dir.join("current.md").exists());
+    }
+
+    #[test]
+    fn migrates_oauth_and_api_keys_to_auth_json_like_pi() {
+        let dir = temp_dir("auth-json");
+        std::fs::write(
+            dir.join("oauth.json"),
+            json!({
+                "anthropic": {
+                    "accessToken": "oauth-token"
+                }
+            })
+            .to_string(),
+        )
+        .expect("oauth should be written");
+        std::fs::write(
+            dir.join("settings.json"),
+            json!({
+                "apiKeys": {
+                    "openai": "sk-test",
+                    "anthropic": "sk-ignored"
+                },
+                "defaultProvider": "openai"
+            })
+            .to_string(),
+        )
+        .expect("settings should be written");
+
+        let providers = migrate_auth_to_auth_json(&dir).expect("auth migration should succeed");
+
+        assert_eq!(providers, vec!["anthropic", "openai"]);
+        let auth: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("auth.json")).expect("auth should be written"),
+        )
+        .expect("auth should parse");
+        assert_eq!(auth["anthropic"]["type"], "oauth");
+        assert_eq!(auth["anthropic"]["accessToken"], "oauth-token");
+        assert_eq!(auth["openai"]["type"], "api_key");
+        assert_eq!(auth["openai"]["key"], "sk-test");
+        assert!(dir.join("oauth.json.migrated").exists());
+
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("settings.json")).expect("settings should remain"),
+        )
+        .expect("settings should parse");
+        assert!(settings.get("apiKeys").is_none());
+        assert_eq!(settings["defaultProvider"], "openai");
+    }
+
+    #[test]
+    fn skips_auth_migration_when_auth_json_exists_like_pi() {
+        let dir = temp_dir("auth-json-existing");
+        std::fs::write(
+            dir.join("auth.json"),
+            json!({
+                "openai": {
+                    "type": "api_key",
+                    "key": "current"
+                }
+            })
+            .to_string(),
+        )
+        .expect("auth should be written");
+        std::fs::write(
+            dir.join("settings.json"),
+            json!({
+                "apiKeys": {
+                    "openai": "legacy"
+                }
+            })
+            .to_string(),
+        )
+        .expect("settings should be written");
+
+        let providers = migrate_auth_to_auth_json(&dir).expect("auth migration should succeed");
+
+        assert!(providers.is_empty());
+        let auth: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("auth.json")).expect("auth should remain"),
+        )
+        .expect("auth should parse");
+        assert_eq!(auth["openai"]["key"], "current");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("settings.json")).expect("settings should remain"),
+        )
+        .expect("settings should parse");
+        assert!(settings.get("apiKeys").is_some());
     }
 
     #[test]
