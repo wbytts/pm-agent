@@ -234,6 +234,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_codeberg_https_git_url_like_pi() {
+        let source = parse_git_url("https://codeberg.org/user/repo").expect("git source");
+        assert_eq!(source.repo, "https://codeberg.org/user/repo");
+        assert_eq!(source.host, "codeberg.org");
+        assert_eq!(source.path, "user/repo");
+        assert_eq!(source.reference, None);
+        assert!(!source.pinned);
+    }
+
+    #[test]
     fn parses_scp_like_url() {
         let source = parse_git_url("git:git@github.com:user/repo@v1").expect("git source");
         assert_eq!(source.repo, "git@github.com:user/repo");
