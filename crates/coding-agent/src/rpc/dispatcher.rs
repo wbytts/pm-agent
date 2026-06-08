@@ -1,5 +1,5 @@
 use agent::AgentMessage;
-use ai::Model;
+use ai::{Model, ModelThinkingLevel};
 
 use crate::bash_executor::BashResult;
 use crate::rpc::types::{QueueMode, RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand};
@@ -28,6 +28,12 @@ pub trait RpcSessionBackend {
         Err("cycle_model is not supported by this RPC backend".to_string())
     }
     fn available_models(&self) -> Result<Vec<Model>, String>;
+    fn set_thinking_level(&mut self, _level: ModelThinkingLevel) -> Result<(), String> {
+        Err("set_thinking_level is not supported by this RPC backend".to_string())
+    }
+    fn cycle_thinking_level(&mut self) -> Result<Option<ModelThinkingLevel>, String> {
+        Err("cycle_thinking_level is not supported by this RPC backend".to_string())
+    }
     fn set_steering_mode(&mut self, _mode: QueueMode) -> Result<(), String> {
         Err("set_steering_mode is not supported by this RPC backend".to_string())
     }
@@ -138,11 +144,16 @@ impl<B: RpcSessionBackend> RpcDispatcher<B> {
             RpcCommand::GetAvailableModels { .. } => {
                 to_value(serde_json::json!({ "models": self.backend.available_models()? }))
             }
-            RpcCommand::SetThinkingLevel { .. } => {
-                Err("set_thinking_level is not supported by this RPC dispatcher yet".to_string())
+            RpcCommand::SetThinkingLevel { level, .. } => {
+                self.backend.set_thinking_level(level)?;
+                Ok(None)
             }
             RpcCommand::CycleThinkingLevel { .. } => {
-                Err("cycle_thinking_level is not supported by this RPC dispatcher yet".to_string())
+                to_value(self.backend.cycle_thinking_level()?.map(|level| {
+                    serde_json::json!({
+                        "level": level,
+                    })
+                }))
             }
             RpcCommand::SetSteeringMode { mode, .. } => {
                 self.backend.set_steering_mode(mode)?;
@@ -215,12 +226,22 @@ fn to_value<T: serde::Serialize>(value: T) -> Result<Option<serde_json::Value>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ai::{MessageRole, ModelThinkingLevel};
+    use ai::MessageRole;
 
-    #[derive(Default)]
     struct TestBackend {
         messages: Vec<AgentMessage>,
         session_name: Option<String>,
+        thinking_level: ModelThinkingLevel,
+    }
+
+    impl Default for TestBackend {
+        fn default() -> Self {
+            Self {
+                messages: Vec::new(),
+                session_name: None,
+                thinking_level: ModelThinkingLevel::Off,
+            }
+        }
     }
 
     impl RpcSessionBackend for TestBackend {
@@ -233,7 +254,7 @@ mod tests {
         fn state(&self) -> Result<RpcSessionState, String> {
             Ok(RpcSessionState {
                 model: None,
-                thinking_level: ModelThinkingLevel::Off,
+                thinking_level: self.thinking_level,
                 is_streaming: false,
                 is_compacting: false,
                 steering_mode: crate::rpc::types::QueueMode::OneAtATime,
@@ -253,6 +274,16 @@ mod tests {
 
         fn available_models(&self) -> Result<Vec<ai::Model>, String> {
             Ok(Vec::new())
+        }
+
+        fn set_thinking_level(&mut self, level: ModelThinkingLevel) -> Result<(), String> {
+            self.thinking_level = level;
+            Ok(())
+        }
+
+        fn cycle_thinking_level(&mut self) -> Result<Option<ModelThinkingLevel>, String> {
+            self.thinking_level = ModelThinkingLevel::High;
+            Ok(Some(self.thinking_level))
         }
 
         fn last_assistant_text(&self) -> Result<Option<String>, String> {
@@ -299,6 +330,40 @@ mod tests {
         assert!(!response.is_success());
         let RpcResponse::Response { error, .. } = response;
         assert_eq!(error.as_deref(), Some("Session name cannot be empty"));
+    }
+
+    #[test]
+    fn dispatches_thinking_level_commands_like_pi() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::SetThinkingLevel {
+            id: Some("set-thinking".to_string()),
+            level: ModelThinkingLevel::Medium,
+        });
+        assert!(response.is_success());
+        assert_eq!(
+            dispatcher
+                .backend()
+                .state()
+                .expect("state should read")
+                .thinking_level,
+            ModelThinkingLevel::Medium
+        );
+
+        let response = dispatcher.handle_command(RpcCommand::CycleThinkingLevel {
+            id: Some("cycle-thinking".to_string()),
+        });
+        assert!(response.is_success());
+        let RpcResponse::Response { data, .. } = response;
+        assert_eq!(data.expect("cycle data")["level"], "high");
+        assert_eq!(
+            dispatcher
+                .backend()
+                .state()
+                .expect("state should read")
+                .thinking_level,
+            ModelThinkingLevel::High
+        );
     }
 
     #[test]

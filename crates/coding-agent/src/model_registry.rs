@@ -84,6 +84,12 @@ impl<B: AuthStorageBackend> ModelRegistry<B> {
         self.models.clone()
     }
 
+    #[cfg(test)]
+    pub fn with_models(mut self, models: Vec<Model>) -> Self {
+        self.models = models;
+        self
+    }
+
     pub fn get_available(&self) -> Vec<Model> {
         self.models
             .iter()

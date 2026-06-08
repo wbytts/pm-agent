@@ -1,6 +1,6 @@
 use agent::harness::{PromptTemplate, SessionStorage, Skill};
 use agent::AgentMessage;
-use ai::{MessageRole, Model, ModelThinkingLevel};
+use ai::{clamp_thinking_level, supported_thinking_levels, MessageRole, Model, ModelThinkingLevel};
 use std::path::PathBuf;
 
 use crate::auth_storage::AuthStorageBackend;
@@ -20,6 +20,7 @@ pub struct ManagedRpcSessionBackend<S: SessionStorage, B: AuthStorageBackend> {
     session_manager: SessionManager<S>,
     model_registry: ModelRegistry<B>,
     model: Option<Model>,
+    thinking_level: ModelThinkingLevel,
     steering_mode: QueueMode,
     follow_up_mode: QueueMode,
     auto_compaction_enabled: bool,
@@ -34,6 +35,7 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
             session_manager,
             model_registry,
             model,
+            thinking_level: ModelThinkingLevel::Medium,
             steering_mode: QueueMode::OneAtATime,
             follow_up_mode: QueueMode::OneAtATime,
             auto_compaction_enabled: true,
@@ -102,6 +104,36 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
     pub fn model(&self) -> Option<&Model> {
         self.model.as_ref()
     }
+
+    fn available_thinking_levels(&self) -> Vec<ModelThinkingLevel> {
+        self.model
+            .as_ref()
+            .map(supported_thinking_levels)
+            .unwrap_or_else(|| {
+                vec![
+                    ModelThinkingLevel::Off,
+                    ModelThinkingLevel::Minimal,
+                    ModelThinkingLevel::Low,
+                    ModelThinkingLevel::Medium,
+                    ModelThinkingLevel::High,
+                    ModelThinkingLevel::XHigh,
+                ]
+            })
+    }
+
+    fn supports_thinking(&self) -> bool {
+        self.model
+            .as_ref()
+            .and_then(|model| model.reasoning.as_ref())
+            .is_some_and(|reasoning| reasoning.enabled)
+    }
+
+    fn effective_thinking_level(&self, level: ModelThinkingLevel) -> ModelThinkingLevel {
+        self.model
+            .as_ref()
+            .map(|model| clamp_thinking_level(model, level))
+            .unwrap_or(level)
+    }
 }
 
 impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
@@ -121,7 +153,7 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
         let stats = self.session_manager.session_stats();
         Ok(RpcSessionState {
             model: self.model.clone(),
-            thinking_level: ModelThinkingLevel::Off,
+            thinking_level: self.thinking_level,
             is_streaming: false,
             is_compacting: false,
             steering_mode: self.steering_mode,
@@ -141,11 +173,32 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
             .find(&provider, &model_id)
             .ok_or_else(|| format!("Model not found: {provider}/{model_id}"))?;
         self.model = Some(model.clone());
+        self.thinking_level = self.effective_thinking_level(self.thinking_level);
         Ok(model)
     }
 
     fn available_models(&self) -> Result<Vec<Model>, String> {
         Ok(self.model_registry.get_available())
+    }
+
+    fn set_thinking_level(&mut self, level: ModelThinkingLevel) -> Result<(), String> {
+        self.thinking_level = self.effective_thinking_level(level);
+        Ok(())
+    }
+
+    fn cycle_thinking_level(&mut self) -> Result<Option<ModelThinkingLevel>, String> {
+        if !self.supports_thinking() {
+            self.thinking_level = ModelThinkingLevel::Off;
+            return Ok(None);
+        }
+        let levels = self.available_thinking_levels();
+        let current_index = levels
+            .iter()
+            .position(|level| *level == self.thinking_level)
+            .unwrap_or(0);
+        let next_level = levels[(current_index + 1) % levels.len()];
+        self.set_thinking_level(next_level)?;
+        Ok(Some(self.thinking_level))
     }
 
     fn set_steering_mode(&mut self, mode: QueueMode) -> Result<(), String> {
@@ -271,6 +324,60 @@ mod tests {
             .expect_err("model should be missing");
 
         assert_eq!(error, "Model not found: missing/model");
+    }
+
+    #[test]
+    fn managed_backend_sets_and_cycles_thinking_level_like_pi_rpc() {
+        let mut backend = test_backend_with_models(vec![reasoning_model()]);
+
+        backend
+            .set_thinking_level(ModelThinkingLevel::High)
+            .expect("set thinking");
+        assert_eq!(
+            backend.state().expect("state").thinking_level,
+            ModelThinkingLevel::High
+        );
+
+        let cycled = backend
+            .cycle_thinking_level()
+            .expect("cycle thinking")
+            .expect("reasoning model should cycle");
+        assert_eq!(cycled, ModelThinkingLevel::XHigh);
+        assert_eq!(
+            backend.state().expect("state").thinking_level,
+            ModelThinkingLevel::XHigh
+        );
+    }
+
+    #[test]
+    fn managed_backend_clamps_thinking_level_to_current_model_like_pi_rpc() {
+        let mut model = reasoning_model();
+        model
+            .thinking_level_map
+            .insert(ModelThinkingLevel::High, None);
+        let mut backend = test_backend_with_models(vec![model]);
+
+        backend
+            .set_thinking_level(ModelThinkingLevel::High)
+            .expect("set thinking");
+
+        assert_eq!(
+            backend.state().expect("state").thinking_level,
+            ModelThinkingLevel::XHigh
+        );
+    }
+
+    #[test]
+    fn managed_backend_cycle_thinking_returns_null_for_non_reasoning_model_like_pi_rpc() {
+        let mut backend = test_backend_with_models(vec![plain_model()]);
+
+        let cycled = backend.cycle_thinking_level().expect("cycle thinking");
+
+        assert_eq!(cycled, None);
+        assert_eq!(
+            backend.state().expect("state").thinking_level,
+            ModelThinkingLevel::Off
+        );
     }
 
     #[test]
@@ -504,6 +611,42 @@ mod tests {
         let auth_storage = AuthStorage::in_memory(AuthStorageData::new());
         let model_registry = ModelRegistry::in_memory(auth_storage);
         ManagedRpcSessionBackend::new(session_manager, model_registry)
+    }
+
+    fn test_backend_with_models(
+        models: Vec<Model>,
+    ) -> ManagedRpcSessionBackend<InMemorySessionStorage, InMemoryAuthStorageBackend> {
+        let session_manager = SessionManager::in_memory("/tmp/project");
+        let mut auth_data = AuthStorageData::new();
+        auth_data.insert(
+            "test".to_string(),
+            crate::auth_storage::AuthCredential::ApiKey {
+                key: "test-key".to_string(),
+            },
+        );
+        let auth_storage = AuthStorage::in_memory(auth_data);
+        let model_registry = ModelRegistry::in_memory(auth_storage).with_models(models);
+        ManagedRpcSessionBackend::new(session_manager, model_registry)
+    }
+
+    fn plain_model() -> Model {
+        Model {
+            provider: "test".to_string(),
+            id: "plain".to_string(),
+            display_name: "Plain".to_string(),
+            ..Model::default()
+        }
+    }
+
+    fn reasoning_model() -> Model {
+        let mut model = plain_model();
+        model.id = "reasoning".to_string();
+        model.display_name = "Reasoning".to_string();
+        model.reasoning = Some(ai::ModelReasoning { enabled: true });
+        model
+            .thinking_level_map
+            .insert(ModelThinkingLevel::XHigh, Some("xhigh".to_string()));
+        model
     }
 
     fn temp_dir() -> PathBuf {
