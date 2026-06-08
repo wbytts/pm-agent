@@ -281,12 +281,33 @@ impl<B: AuthStorageBackend> AuthStorage<B> {
         if self.load_error {
             return;
         }
-        let data = self.data.clone();
-        match serde_json::to_string_pretty(&data).map_err(|error| error.to_string()) {
+        let current = match self
+            .backend
+            .read()
+            .and_then(|content| parse_auth_data(content.as_deref()))
+        {
+            Ok(current) => current,
+            Err(error) => {
+                self.errors.push(error);
+                return;
+            }
+        };
+        let mut merged = current;
+        if exists {
+            if let Some(credential) = self.data.get(&provider).cloned() {
+                merged.insert(provider.clone(), credential);
+            }
+        } else {
+            merged.remove(&provider);
+        }
+
+        match serde_json::to_string_pretty(&merged).map_err(|error| error.to_string()) {
             Ok(content) => {
                 if let Err(error) = self.backend.write(content) {
                     self.errors.push(error);
+                    return;
                 }
+                self.data = merged;
             }
             Err(error) => self.errors.push(error),
         }
@@ -321,6 +342,7 @@ fn set_owner_only_permissions(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn api_key_priority_uses_runtime_then_stored_then_fallback() {
@@ -351,6 +373,93 @@ mod tests {
                 source: None,
                 label: None
             }
+        );
+    }
+
+    #[derive(Clone)]
+    struct SharedMemoryAuthBackend {
+        value: Arc<Mutex<Option<String>>>,
+    }
+
+    impl SharedMemoryAuthBackend {
+        fn new(value: Option<String>) -> Self {
+            Self {
+                value: Arc::new(Mutex::new(value)),
+            }
+        }
+
+        fn replace(&self, content: String) {
+            *self.value.lock().expect("auth backend lock") = Some(content);
+        }
+
+        fn content(&self) -> Option<String> {
+            self.value.lock().expect("auth backend lock").clone()
+        }
+    }
+
+    impl AuthStorageBackend for SharedMemoryAuthBackend {
+        fn read(&self) -> Result<Option<String>, String> {
+            Ok(self.content())
+        }
+
+        fn write(&mut self, content: String) -> Result<(), String> {
+            self.replace(content);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn provider_write_preserves_external_auth_json_edits_like_pi() {
+        let backend = SharedMemoryAuthBackend::new(Some(
+            r#"{"openai":{"type":"api_key","key":"old-openai"}}"#.to_string(),
+        ));
+        let mut storage = AuthStorage::from_backend(backend.clone());
+
+        backend.replace(r#"{"anthropic":{"type":"api_key","key":"external"}}"#.to_string());
+        storage.set(
+            "openai",
+            AuthCredential::ApiKey {
+                key: "new-openai".to_string(),
+            },
+        );
+
+        let content = backend.content().expect("auth content should be written");
+        let data: AuthStorageData = serde_json::from_str(&content).expect("auth json should parse");
+        assert_eq!(
+            data.get("openai"),
+            Some(&AuthCredential::ApiKey {
+                key: "new-openai".to_string()
+            })
+        );
+        assert_eq!(
+            data.get("anthropic"),
+            Some(&AuthCredential::ApiKey {
+                key: "external".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn provider_remove_preserves_external_auth_json_edits_like_pi() {
+        let backend = SharedMemoryAuthBackend::new(Some(
+            r#"{"openai":{"type":"api_key","key":"old-openai"}}"#.to_string(),
+        ));
+        let mut storage = AuthStorage::from_backend(backend.clone());
+
+        backend.replace(
+            r#"{"openai":{"type":"api_key","key":"old-openai"},"anthropic":{"type":"api_key","key":"external"}}"#
+                .to_string(),
+        );
+        storage.remove("openai");
+
+        let content = backend.content().expect("auth content should be written");
+        let data: AuthStorageData = serde_json::from_str(&content).expect("auth json should parse");
+        assert!(!data.contains_key("openai"));
+        assert_eq!(
+            data.get("anthropic"),
+            Some(&AuthCredential::ApiKey {
+                key: "external".to_string()
+            })
         );
     }
 }
