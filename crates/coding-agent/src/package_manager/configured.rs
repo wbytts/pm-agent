@@ -320,6 +320,29 @@ mod tests {
     }
 
     #[test]
+    fn configured_update_sources_keeps_global_scope_for_targeted_git_update_like_pi() {
+        let settings = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({
+            "packages": ["git:github.com/test/extension"]
+        }));
+
+        let sources = configured_update_sources(
+            &settings,
+            "/agent",
+            "/work",
+            Some("git:github.com/test/extension"),
+        )
+        .expect("global git source should match targeted update");
+
+        assert_eq!(
+            sources,
+            vec![ConfiguredUpdateSource {
+                source: "git:github.com/test/extension".to_string(),
+                scope: SourceScope::User,
+            }]
+        );
+    }
+
+    #[test]
     fn configured_package_sources_dedupes_project_local_sources_by_resolved_scope_base_like_pi() {
         let mut storage = InMemorySettingsStorage::new();
         storage
