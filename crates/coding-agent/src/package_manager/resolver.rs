@@ -956,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn extension_subdir_manifest_resolves_globs_like_pi() {
+    fn extension_subdir_manifest_treats_entries_as_direct_paths_like_pi() {
         let package_dir = temp_dir();
         let extension_dir = package_dir.join("extensions").join("custom");
         let main = extension_dir.join("main.ts");
@@ -964,7 +964,7 @@ mod tests {
         fs::create_dir_all(&extension_dir).expect("extension dir");
         fs::write(
             extension_dir.join("package.json"),
-            r#"{"pi":{"extensions":["*.ts","!helper.ts"]}}"#,
+            r#"{"pi":{"extensions":["./main.ts","*.ts"]}}"#,
         )
         .expect("subdir manifest");
         fs::write(&main, "export default function() {}").expect("main extension");

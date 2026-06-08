@@ -1,7 +1,6 @@
 use super::manifest::read_pi_manifest;
-use super::resolver::collect_manifest_enabled_files;
 use super::types::ResourceType;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub(super) fn local_source_path(source: &str) -> Option<PathBuf> {
     let path = PathBuf::from(source);
@@ -50,7 +49,11 @@ pub(super) fn display_path(path: impl AsRef<Path>) -> String {
 pub(super) fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
     if let Some(manifest) = read_pi_manifest(dir) {
         if let Some(entries) = manifest.extensions {
-            let resolved = collect_manifest_enabled_files(&entries, dir, ResourceType::Extension);
+            let resolved = entries
+                .into_iter()
+                .map(|entry| normalize_joined_path(dir.join(entry)))
+                .filter(|path| path.exists())
+                .collect::<Vec<_>>();
             if !resolved.is_empty() {
                 return Some(resolved);
             }
@@ -63,4 +66,10 @@ pub(super) fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
         }
     }
     None
+}
+
+fn normalize_joined_path(path: PathBuf) -> PathBuf {
+    path.components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect()
 }
