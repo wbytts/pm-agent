@@ -1,0 +1,23 @@
+[package]
+name = "pm-agent-app"
+version.workspace = true
+description = "PM Agent desktop workspace"
+authors.workspace = true
+edition.workspace = true
+
+[lib]
+name = "pm_agent_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-opener = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+pm-agent = { path = "../crates/pm-agent" }
+pm-sqlite = { path = "../crates/pm-sqlite" }
+coding-agent = { path = "../crates/coding-agent" }
+ai = { path = "../crates/ai" }

@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+:root {
+  color: #1f2328;
+  background: #eef0f3;
+  font-family:
+    "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.desktop-window {
+  color-scheme: light;
+}
+
+.desktop-toolbar {
+  -webkit-app-region: drag;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 70%);
+}
+
+.desktop-toolbar button,
+.desktop-toolbar .ant-btn,
+.desktop-toolbar .toolbar-search {
+  -webkit-app-region: no-drag;
+}
+
+.desktop-sidebar {
+  box-shadow: inset -1px 0 0 rgb(255 255 255 / 45%);
+}
+
+.content-titlebar,
+.desktop-inspector {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 72%);
+}
+
+.desktop-card.ant-card {
+  border-color: #d8dde5;
+  box-shadow: none;
+}
+
+.desktop-card .ant-card-head {
+  min-height: 36px;
+  border-bottom-color: #d8dde5;
+  background: #fbfbfc;
+}
+
+.desktop-card .ant-card-head-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ant-btn,
+.ant-input,
+.ant-select-selector,
+.ant-input-affix-wrapper {
+  box-shadow: none !important;
+}
+
+.ant-btn {
+  font-weight: 500;
+}
+
+.pm-table .ant-table {
+  font-size: 13px;
+  background: #fbfbfc;
+}
+
+.pm-table .ant-table-thead > tr > th {
+  background: #eef1f5;
+  border-bottom-color: #d8dde5;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.pm-table .ant-table-tbody > tr > td {
+  border-bottom-color: #e1e5eb;
+}
+
+.pm-table .ant-table-tbody > tr.ant-table-row:hover > td,
+.pm-table .ant-table-tbody > tr.selected-row > td {
+  background: #d9e7ff;
+}
+
+.ant-tabs-nav {
+  margin-bottom: 12px !important;
+}
+
+.pm-modal .ant-modal-content {
+  border-radius: 8px;
+  box-shadow: 0 18px 48px rgb(15 23 42 / 22%);
+}
+
+@media (max-width: 900px) {
+  .toolbar-title,
+  .toolbar-search {
+    display: none;
+  }
+
+  .desktop-sidebar {
+    width: 168px;
+  }
+
+  .desktop-inspector {
+    width: 340px;
+  }
+}

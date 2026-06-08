@@ -1,0 +1,14 @@
+[package]
+name = "pm-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+agent = { path = "../agent" }
+ai = { path = "../ai" }
+coding-agent = { path = "../coding-agent" }
+
+[dev-dependencies]
