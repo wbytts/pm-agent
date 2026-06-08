@@ -90,7 +90,7 @@ fn normalize_dot_segments(path: PathBuf) -> PathBuf {
 }
 
 pub fn get_cwd_relative_path(file_path: impl AsRef<Path>, cwd: impl AsRef<Path>) -> Option<String> {
-    let resolved_cwd = canonicalize_path(cwd.as_ref());
+    let resolved_cwd = resolve_path(&cwd.as_ref().to_string_lossy(), "", None);
     let resolved_path = resolve_path(&file_path.as_ref().to_string_lossy(), &resolved_cwd, None);
     let relative = resolved_path.strip_prefix(&resolved_cwd).ok()?;
 
@@ -299,6 +299,29 @@ mod tests {
             resolve_path("./pkg/../package", "/tmp/work", None),
             PathBuf::from("/tmp/work/package")
         );
+    }
+
+    #[test]
+    fn formats_relative_path_without_canonicalizing_symlinked_cwd_like_pi() {
+        let root = std::env::temp_dir().join(format!("pm-agent-paths-{}", std::process::id()));
+        let real = root.join("real");
+        let link = root.join("link");
+        let child = link.join("child.txt");
+
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&real).expect("create real dir");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).expect("create symlink");
+
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                format_path_relative_to_cwd_or_absolute(&child, &link),
+                "child.txt"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
