@@ -1306,6 +1306,33 @@ mod tests {
     }
 
     #[test]
+    fn installed_path_uses_scoped_pnpm_global_list_path_like_pi() {
+        let agent_dir = temp_dir();
+        let cwd = temp_dir();
+        let pnpm_root = temp_dir().join("pnpm").join("global").join("v11");
+        let package_path = pnpm_root
+            .join("20-hash")
+            .join("node_modules")
+            .join("@scope")
+            .join("pkg");
+        fs::create_dir_all(&package_path).expect("legacy scoped pnpm package path should exist");
+        let command = fake_scoped_pnpm_list_command(&pnpm_root, &package_path);
+
+        let installed = LocalPackageManager::get_installed_path_with_npm_command(
+            &agent_dir,
+            &cwd,
+            "npm:@scope/pkg",
+            SourceScope::User,
+            Some(command),
+        );
+
+        assert_eq!(
+            installed.as_deref(),
+            Some(display_path(&package_path).as_str())
+        );
+    }
+
+    #[test]
     fn installed_path_ignores_malformed_pnpm_global_list_like_pi() {
         let agent_dir = temp_dir();
         let cwd = temp_dir();
@@ -2172,6 +2199,14 @@ mod tests {
     fn fake_pnpm_list_command(pnpm_root: &Path, package_path: &Path) -> NpmCommandConfig {
         fake_pnpm_command(&format!(
             r#"[{{"path":"{}","dependencies":{{"pnpm-pkg":{{"path":"{}"}}}}}}]"#,
+            pnpm_root.to_string_lossy(),
+            package_path.to_string_lossy()
+        ))
+    }
+
+    fn fake_scoped_pnpm_list_command(pnpm_root: &Path, package_path: &Path) -> NpmCommandConfig {
+        fake_pnpm_command(&format!(
+            r#"[{{"path":"{}","dependencies":{{"@scope/pkg":{{"path":"{}"}}}}}}]"#,
             pnpm_root.to_string_lossy(),
             package_path.to_string_lossy()
         ))
