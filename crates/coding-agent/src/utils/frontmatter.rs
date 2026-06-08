@@ -9,7 +9,9 @@ pub struct ParsedFrontmatter {
 pub fn parse_frontmatter(content: &str) -> Result<ParsedFrontmatter, serde_yaml::Error> {
     let (yaml, body) = extract_frontmatter(content);
     let frontmatter = match yaml {
-        Some(yaml) if !yaml.trim().is_empty() => serde_yaml::from_str(&yaml)?,
+        Some(yaml) if !yaml.trim().is_empty() => {
+            normalize_frontmatter_value(&yaml, serde_yaml::from_str(&yaml)?)
+        }
         _ => Value::Mapping(Default::default()),
     };
 
@@ -37,6 +39,43 @@ fn extract_frontmatter(content: &str) -> (Option<String>, String) {
 
 fn normalize_newlines(content: &str) -> String {
     content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn normalize_frontmatter_value(yaml: &str, mut value: Value) -> Value {
+    if value.is_null() {
+        return Value::Mapping(Default::default());
+    }
+    let literal_keys = literal_block_keys(yaml);
+    if literal_keys.is_empty() {
+        return value;
+    }
+    let Some(mapping) = value.as_mapping_mut() else {
+        return value;
+    };
+    for key in literal_keys {
+        let key_value = Value::String(key);
+        let Some(Value::String(text)) = mapping.get_mut(&key_value) else {
+            continue;
+        };
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+    }
+    value
+}
+
+fn literal_block_keys(yaml: &str) -> Vec<String> {
+    yaml.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('#') || line.len() != trimmed.len() {
+                return None;
+            }
+            let (key, marker) = trimmed.split_once(':')?;
+            let marker = marker.trim_start();
+            (marker == "|" || marker.starts_with("| ")).then(|| key.trim().to_string())
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -71,5 +110,37 @@ mod tests {
             strip_frontmatter("---\na: 1\n---\nContent").expect("frontmatter"),
             "Content"
         );
+    }
+
+    #[test]
+    fn parses_multiline_and_crlf_frontmatter_like_pi() {
+        let parsed = parse_frontmatter(
+            "---\r\ndescription: |\r\n  Line one\r\n  Line two\r\n---\r\nBody\r\n",
+        )
+        .expect("frontmatter");
+
+        assert_eq!(
+            parsed.frontmatter["description"],
+            Value::String("Line one\nLine two\n".to_string())
+        );
+        assert_eq!(parsed.body, "Body");
+    }
+
+    #[test]
+    fn returns_empty_frontmatter_for_comments_and_missing_terminator_like_pi() {
+        let comments = parse_frontmatter("---\n# just a comment\n---\nBody").expect("frontmatter");
+        assert!(comments
+            .frontmatter
+            .as_mapping()
+            .is_some_and(|map| map.is_empty()));
+        assert_eq!(comments.body, "Body");
+
+        let missing =
+            parse_frontmatter("---\nname: test\nBody without terminator").expect("frontmatter");
+        assert!(missing
+            .frontmatter
+            .as_mapping()
+            .is_some_and(|map| map.is_empty()));
+        assert_eq!(missing.body, "---\nname: test\nBody without terminator");
     }
 }
