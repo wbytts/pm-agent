@@ -183,23 +183,45 @@ pub fn parse_command_args(args_string: &str) -> Vec<String> {
 }
 
 pub fn substitute_args(content: &str, args: &[String]) -> String {
-    let mut result = substitute_positional_args(content, args);
-    result = substitute_slice_args(&result, args);
     let all_args = args.join(" ");
-    result = result.replace("$ARGUMENTS", &all_args);
-    result.replace("$@", &all_args)
-}
-
-pub fn format_prompt_template_invocation(template: &PromptTemplate, args: &[String]) -> String {
-    substitute_args(&template.content, args)
-}
-
-fn substitute_positional_args(content: &str, args: &[String]) -> String {
-    let mut output = String::new();
     let chars = content.chars().collect::<Vec<_>>();
+    let mut output = String::new();
     let mut index = 0;
     while index < chars.len() {
-        if chars[index] == '$' && chars.get(index + 1).is_some_and(char::is_ascii_digit) {
+        if chars[index] != '$' {
+            output.push(chars[index]);
+            index += 1;
+            continue;
+        }
+
+        if content[index..].starts_with("$ARGUMENTS") {
+            output.push_str(&all_args);
+            index += "$ARGUMENTS".len();
+            continue;
+        }
+
+        if content[index..].starts_with("$@") {
+            output.push_str(&all_args);
+            index += "$@".len();
+            continue;
+        }
+
+        if content[index..].starts_with("${@:") {
+            let after_start = index + "${@:".len();
+            if let Some(close_offset) = content[after_start..].find('}') {
+                let end = after_start + close_offset;
+                let expression = &content[after_start..end];
+                if let Some(replacement) = slice_args(expression, args) {
+                    output.push_str(&replacement);
+                } else {
+                    output.push_str(&content[index..=end]);
+                }
+                index = end + 1;
+                continue;
+            }
+        }
+
+        if chars.get(index + 1).is_some_and(char::is_ascii_digit) {
             let mut end = index + 1;
             while chars.get(end).is_some_and(char::is_ascii_digit) {
                 end += 1;
@@ -213,34 +235,17 @@ fn substitute_positional_args(content: &str, args: &[String]) -> String {
                 output.push_str(args.get(number - 1).map_or("", String::as_str));
             }
             index = end;
-        } else {
-            output.push(chars[index]);
-            index += 1;
+            continue;
         }
+
+        output.push(chars[index]);
+        index += 1;
     }
     output
 }
 
-fn substitute_slice_args(content: &str, args: &[String]) -> String {
-    let mut output = String::new();
-    let mut rest = content;
-    while let Some(start) = rest.find("${@:") {
-        output.push_str(&rest[..start]);
-        let after = &rest[start + 4..];
-        let Some(end) = after.find('}') else {
-            output.push_str(&rest[start..]);
-            return output;
-        };
-        let expression = &after[..end];
-        if let Some(replacement) = slice_args(expression, args) {
-            output.push_str(&replacement);
-        } else {
-            output.push_str(&rest[start..start + 4 + end + 1]);
-        }
-        rest = &after[end + 1..];
-    }
-    output.push_str(rest);
-    output
+pub fn format_prompt_template_invocation(template: &PromptTemplate, args: &[String]) -> String {
+    substitute_args(&template.content, args)
 }
 
 fn slice_args(expression: &str, args: &[String]) -> Option<String> {
@@ -335,6 +340,14 @@ mod tests {
             substitute_args("${@:x}|${@:1:x}|${@:}", &args),
             "${@:x}|${@:1:x}|${@:}"
         );
+    }
+
+    #[test]
+    fn does_not_recursively_substitute_patterns_inside_argument_values_like_pi() {
+        let args = vec!["$1".to_string(), "$@".to_string(), "${@:1}".to_string()];
+
+        assert_eq!(substitute_args("$ARGUMENTS", &args), "$1 $@ ${@:1}");
+        assert_eq!(substitute_args("${@:2}", &args), "$@ ${@:1}");
     }
 
     #[test]
