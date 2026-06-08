@@ -602,11 +602,20 @@ fn codex_responses_url(base_url: &str) -> String {
 
 fn normalize_azure_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.ends_with(".openai.azure.com") || trimmed.ends_with(".cognitiveservices.azure.com") {
-        return format!("{trimmed}/openai/v1");
-    }
-    if trimmed.ends_with("/openai") {
-        return format!("{trimmed}/v1");
+    let Ok(mut url) = reqwest::Url::parse(trimmed) else {
+        return trimmed.to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return trimmed.to_string();
+    };
+    let is_azure_host =
+        host.ends_with(".openai.azure.com") || host.ends_with(".cognitiveservices.azure.com");
+    let path = url.path().trim_end_matches('/');
+
+    if is_azure_host && (path.is_empty() || path == "/" || path == "/openai") {
+        url.set_path("/openai/v1");
+        url.set_query(None);
+        return url.to_string().trim_end_matches('/').to_string();
     }
     trimmed.to_string()
 }
@@ -667,6 +676,24 @@ mod tests {
             )
             .expect("base url"),
             "https://gateway.ai.cloudflare.com/v1/account/gateway/openai"
+        );
+    }
+
+    #[test]
+    fn normalizes_azure_base_urls_like_pi() {
+        assert_eq!(
+            normalize_azure_base_url("https://my-resource.cognitiveservices.azure.com"),
+            "https://my-resource.cognitiveservices.azure.com/openai/v1"
+        );
+        assert_eq!(
+            normalize_azure_base_url(
+                "https://my-resource.openai.azure.com/openai?api-version=2024-12-01"
+            ),
+            "https://my-resource.openai.azure.com/openai/v1"
+        );
+        assert_eq!(
+            normalize_azure_base_url("https://my-proxy.example.com/v1?custom=true"),
+            "https://my-proxy.example.com/v1?custom=true"
         );
     }
 
