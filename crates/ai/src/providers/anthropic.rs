@@ -70,6 +70,7 @@ impl LanguageModelProvider for AnthropicMessagesProvider {
         let base_url = anthropic_provider_base_url(&request.model.provider, raw_base_url)?;
         let url = format!("{}/v1/messages", base_url.trim_end_matches('/'));
         let beta_header = anthropic_beta_header_for_request(&request);
+        let session_affinity_header = anthropic_session_affinity_header(&request);
         let is_oauth_token = anthropic_is_oauth_token(&api_key);
         let payload =
             AnthropicRequest::from_stream_request(request, self.config.max_tokens, is_oauth_token);
@@ -80,6 +81,9 @@ impl LanguageModelProvider for AnthropicMessagesProvider {
             .header("anthropic-version", &self.config.version);
         if let Some(beta_header) = beta_header {
             request_builder = request_builder.header("anthropic-beta", beta_header);
+        }
+        if let Some(session_id) = session_affinity_header {
+            request_builder = request_builder.header("x-session-affinity", session_id);
         }
         let response = request_builder
             .json(&payload)
@@ -1197,6 +1201,26 @@ fn anthropic_beta_header_for_request(request: &StreamRequest) -> Option<&'static
         .then_some(FINE_GRAINED_TOOL_STREAMING_BETA)
 }
 
+fn anthropic_session_affinity_header(request: &StreamRequest) -> Option<String> {
+    let enabled = request
+        .model
+        .compat
+        .get("sendSessionAffinityHeaders")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+
+    request
+        .metadata
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|session_id| !session_id.is_empty())
+        .map(str::to_string)
+}
+
 fn parse_reasoning(value: &Value) -> Option<ModelThinkingLevel> {
     match value.as_str()? {
         "off" => Some(ModelThinkingLevel::Off),
@@ -1308,6 +1332,10 @@ mod tests {
     };
     use crate::types::{Model, ModelInputKind, ModelReasoning, ModelThinkingLevel, Usage};
     use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
 
     #[test]
     fn keeps_normal_anthropic_base_url() {
@@ -1349,6 +1377,141 @@ mod tests {
 
         let value = serde_json::to_value(payload).expect("payload json");
         assert_eq!(value.get("stream"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn fireworks_anthropic_request_sends_session_affinity_header_like_pi() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let (request_sender, request_receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = stream.read(&mut buffer).expect("read");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            request_sender
+                .send(String::from_utf8_lossy(&request).to_string())
+                .expect("send request");
+
+            let body = concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":1}}}\n\n",
+                "event: content_block_start\n",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                "event: message_delta\n",
+                "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+                "event: message_stop\n",
+                "data: {\"type\":\"message_stop\"}\n\n",
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let mut model = Model {
+            id: "accounts/fireworks/models/kimi-k2p6".to_string(),
+            provider: "fireworks".to_string(),
+            api: "anthropic-messages".to_string(),
+            display_name: "Kimi K2.6".to_string(),
+            base_url: Some(format!("http://{address}")),
+            ..Model::default()
+        };
+        model.compat.insert(
+            "sendSessionAffinityHeaders".to_string(),
+            serde_json::json!(true),
+        );
+        let provider = AnthropicMessagesProvider::new(AnthropicMessagesConfig {
+            api_key: Some("fireworks-key".to_string()),
+            base_url: "https://api.anthropic.com".to_string(),
+            version: "2023-06-01".to_string(),
+            max_tokens: 4096,
+        });
+
+        provider
+            .stream(StreamRequest {
+                model,
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Hello".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: BTreeMap::from([("sessionId".to_string(), json!("session-1"))]),
+            })
+            .expect("stream");
+        server.join().expect("server");
+        let request_text = request_receiver
+            .recv()
+            .expect("request text")
+            .to_ascii_lowercase();
+        assert!(request_text.starts_with("post /v1/messages http/1.1"));
+        assert!(request_text.contains("x-session-affinity: session-1"));
+    }
+
+    #[test]
+    fn session_affinity_header_requires_enabled_compat_and_session_id_like_pi() {
+        let mut model = Model {
+            id: "accounts/fireworks/models/kimi-k2p6".to_string(),
+            provider: "fireworks".to_string(),
+            api: "anthropic-messages".to_string(),
+            display_name: "Kimi K2.6".to_string(),
+            ..Model::default()
+        };
+        model.compat.insert(
+            "sendSessionAffinityHeaders".to_string(),
+            serde_json::json!(true),
+        );
+
+        assert_eq!(
+            anthropic_session_affinity_header(&StreamRequest {
+                model: model.clone(),
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: BTreeMap::from([("sessionId".to_string(), json!("session-1"))]),
+            }),
+            Some("session-1".to_string())
+        );
+
+        assert_eq!(
+            anthropic_session_affinity_header(&StreamRequest {
+                model: model.clone(),
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: BTreeMap::from([("sessionId".to_string(), json!("  "))]),
+            }),
+            None
+        );
+
+        model.compat.insert(
+            "sendSessionAffinityHeaders".to_string(),
+            serde_json::json!(false),
+        );
+        assert_eq!(
+            anthropic_session_affinity_header(&StreamRequest {
+                model,
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: BTreeMap::from([("sessionId".to_string(), json!("session-1"))]),
+            }),
+            None
+        );
     }
 
     #[test]
