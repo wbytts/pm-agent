@@ -33,6 +33,7 @@ pub mod model_selector;
 pub mod oauth_selector;
 pub mod output_guard;
 pub mod package_manager;
+pub mod print_mode;
 pub mod prompt_templates;
 pub mod provider_display_names;
 pub mod resolve_config_value;
