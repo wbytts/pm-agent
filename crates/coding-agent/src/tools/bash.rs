@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::tools::common::command_result;
+use crate::tools::common::success;
 use crate::tools::truncate::{format_size, truncate_tail, TruncatedBy, TruncationOptions};
 use crate::types::{CodingAgentError, CodingAgentResult, CodingToolResult, CodingWorkspace};
 
@@ -43,5 +43,18 @@ pub fn run_bash(
             ));
         }
     }
-    command_result(output.status.success(), text)
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+        let message = if text.is_empty() {
+            format!("Command exited with code {code}")
+        } else {
+            format!("{text}\n\nCommand exited with code {code}")
+        };
+        return Err(CodingAgentError::Bash(message));
+    }
+
+    success(text)
 }

@@ -739,6 +739,23 @@ fn bash_truncates_large_output_from_tail() {
     assert!(bash.output.contains("[Truncated: showing last"));
 }
 
+#[test]
+fn bash_returns_error_for_non_zero_exit_like_pi() {
+    let workspace = temp_workspace();
+    let error = execute_tool(
+        &workspace,
+        CodingToolRequest::Bash {
+            command: "printf 'out'; printf 'err' >&2; exit 7".to_string(),
+        },
+    )
+    .expect_err("non-zero bash commands should fail");
+
+    let message = error.to_string();
+    assert!(message.contains("Command exited with code 7"));
+    assert!(message.contains("out"));
+    assert!(message.contains("err"));
+}
+
 fn temp_workspace() -> CodingWorkspace {
     let cwd = collect_temp_workspace("pm-agent-coding-agent-test");
     fs::create_dir_all(&cwd).expect("workspace should be created");

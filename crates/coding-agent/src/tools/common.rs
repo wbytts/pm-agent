@@ -13,18 +13,6 @@ pub fn success(output: impl Into<String>) -> CodingAgentResult<CodingToolResult>
     })
 }
 
-pub fn command_result(
-    success: bool,
-    output: impl Into<String>,
-) -> CodingAgentResult<CodingToolResult> {
-    Ok(CodingToolResult {
-        success,
-        output: output.into(),
-        details: None,
-        content: None,
-    })
-}
-
 pub fn ignored_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
