@@ -21,6 +21,8 @@ pub struct ManagedRpcSessionBackend<S: SessionStorage, B: AuthStorageBackend> {
     model_registry: ModelRegistry<B>,
     model: Option<Model>,
     thinking_level: ModelThinkingLevel,
+    steering_messages: Vec<String>,
+    follow_up_messages: Vec<String>,
     steering_mode: QueueMode,
     follow_up_mode: QueueMode,
     auto_compaction_enabled: bool,
@@ -37,6 +39,8 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
             model_registry,
             model,
             thinking_level: ModelThinkingLevel::Medium,
+            steering_messages: Vec::new(),
+            follow_up_messages: Vec::new(),
             steering_mode: QueueMode::OneAtATime,
             follow_up_mode: QueueMode::OneAtATime,
             auto_compaction_enabled: true,
@@ -111,6 +115,11 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
         self.auto_retry_enabled
     }
 
+    #[cfg(test)]
+    fn queued_steering_messages(&self) -> &[String] {
+        &self.steering_messages
+    }
+
     fn available_thinking_levels(&self) -> Vec<ModelThinkingLevel> {
         self.model
             .as_ref()
@@ -169,8 +178,20 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
             session_name: self.session_manager.session_name(),
             auto_compaction_enabled: self.auto_compaction_enabled,
             message_count: stats.total_messages,
-            pending_message_count: 0,
+            pending_message_count: self.steering_messages.len() + self.follow_up_messages.len(),
         })
+    }
+
+    fn steer(&mut self, message: String) -> Result<(), String> {
+        let message = self.prompt_input.expand_prompt_text(&message)?;
+        self.steering_messages.push(message);
+        Ok(())
+    }
+
+    fn follow_up(&mut self, message: String) -> Result<(), String> {
+        let message = self.prompt_input.expand_prompt_text(&message)?;
+        self.follow_up_messages.push(message);
+        Ok(())
     }
 
     fn set_model(&mut self, provider: String, model_id: String) -> Result<Model, String> {
@@ -568,6 +589,45 @@ mod tests {
         assert!(!backend.auto_retry_enabled());
 
         backend.abort_retry().expect("abort retry");
+    }
+
+    #[test]
+    fn managed_backend_queues_steer_and_follow_up_like_pi_rpc() {
+        let mut backend = test_backend();
+
+        backend.steer("adjust".to_string()).expect("steer");
+        backend.follow_up("next".to_string()).expect("follow up");
+
+        let state = backend.state().expect("state");
+        assert_eq!(state.pending_message_count, 2);
+        assert!(backend.messages().expect("messages").is_empty());
+    }
+
+    #[test]
+    fn managed_backend_expands_queued_prompt_templates_like_pi_rpc() {
+        let mut backend = test_backend();
+        backend.set_prompt_resources(
+            Vec::new(),
+            vec![PromptTemplate {
+                name: "review".to_string(),
+                description: None,
+                argument_hint: None,
+                content: "Review $ARGUMENTS".to_string(),
+                file_path: "/prompts/review.md".to_string(),
+                source_info: None,
+            }],
+        );
+
+        backend
+            .steer("/review src/lib.rs".to_string())
+            .expect("steer");
+
+        assert_eq!(
+            backend.queued_steering_messages(),
+            &["Review src/lib.rs".to_string()]
+        );
+        assert_eq!(backend.state().expect("state").pending_message_count, 1);
+        assert!(backend.messages().expect("messages").is_empty());
     }
 
     #[test]

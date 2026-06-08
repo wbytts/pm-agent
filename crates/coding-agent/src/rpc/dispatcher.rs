@@ -230,6 +230,8 @@ mod tests {
 
     struct TestBackend {
         messages: Vec<AgentMessage>,
+        steering_messages: Vec<String>,
+        follow_up_messages: Vec<String>,
         session_name: Option<String>,
         thinking_level: ModelThinkingLevel,
         auto_retry_enabled: bool,
@@ -240,6 +242,8 @@ mod tests {
         fn default() -> Self {
             Self {
                 messages: Vec::new(),
+                steering_messages: Vec::new(),
+                follow_up_messages: Vec::new(),
                 session_name: None,
                 thinking_level: ModelThinkingLevel::Off,
                 auto_retry_enabled: true,
@@ -252,6 +256,16 @@ mod tests {
         fn prompt(&mut self, message: String) -> Result<(), String> {
             self.messages
                 .push(AgentMessage::new(MessageRole::User, message));
+            Ok(())
+        }
+
+        fn steer(&mut self, message: String) -> Result<(), String> {
+            self.steering_messages.push(message);
+            Ok(())
+        }
+
+        fn follow_up(&mut self, message: String) -> Result<(), String> {
+            self.follow_up_messages.push(message);
             Ok(())
         }
 
@@ -268,7 +282,7 @@ mod tests {
                 session_name: self.session_name.clone(),
                 auto_compaction_enabled: true,
                 message_count: self.messages.len(),
-                pending_message_count: 0,
+                pending_message_count: self.steering_messages.len() + self.follow_up_messages.len(),
             })
         }
 
@@ -396,6 +410,36 @@ mod tests {
         });
         assert!(response.is_success());
         assert!(dispatcher.backend().retry_aborted);
+    }
+
+    #[test]
+    fn dispatches_steer_and_follow_up_like_pi() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::Steer {
+            id: Some("steer".to_string()),
+            message: "adjust".to_string(),
+            images: Vec::new(),
+        });
+        assert!(response.is_success());
+        assert_eq!(dispatcher.backend().steering_messages, vec!["adjust"]);
+
+        let response = dispatcher.handle_command(RpcCommand::FollowUp {
+            id: Some("follow".to_string()),
+            message: "next".to_string(),
+            images: Vec::new(),
+        });
+        assert!(response.is_success());
+        assert_eq!(dispatcher.backend().follow_up_messages, vec!["next"]);
+
+        assert_eq!(
+            dispatcher
+                .backend()
+                .state()
+                .expect("state should read")
+                .pending_message_count,
+            2
+        );
     }
 
     #[test]
