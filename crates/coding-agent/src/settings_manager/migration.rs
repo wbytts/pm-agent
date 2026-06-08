@@ -112,6 +112,44 @@ pub fn migrate_auth_to_auth_json(agent_dir: impl AsRef<Path>) -> Result<Vec<Stri
     Ok(providers)
 }
 
+pub fn migrate_tools_to_bin(agent_dir: impl AsRef<Path>) -> Result<bool, String> {
+    let agent_dir = agent_dir.as_ref();
+    let tools_dir = agent_dir.join("tools");
+    let bin_dir = agent_dir.join("bin");
+
+    if !tools_dir.exists() {
+        return Ok(false);
+    }
+
+    let mut moved_any = false;
+    for binary in ["fd", "rg", "fd.exe", "rg.exe"] {
+        let old_path = tools_dir.join(binary);
+        if !old_path.exists() {
+            continue;
+        }
+
+        fs::create_dir_all(&bin_dir)
+            .map_err(|error| format!("创建 bin 目录 {} 失败：{error}", bin_dir.display()))?;
+        let new_path = bin_dir.join(binary);
+        if new_path.exists() {
+            fs::remove_file(&old_path)
+                .map_err(|error| format!("删除旧工具 {} 失败：{error}", old_path.display()))?;
+            continue;
+        }
+
+        fs::rename(&old_path, &new_path).map_err(|error| {
+            format!(
+                "迁移工具到 bin/ 失败：{} -> {}：{error}",
+                old_path.display(),
+                new_path.display()
+            )
+        })?;
+        moved_any = true;
+    }
+
+    Ok(moved_any)
+}
+
 fn migrate_legacy_skills(object: &mut Map<String, Value>) {
     let Some(skills) = object.get("skills") else {
         return;

@@ -8,7 +8,9 @@ mod storage;
 mod types;
 
 pub use merge::deep_merge_settings;
-pub use migration::{migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_settings};
+pub use migration::{
+    migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_settings, migrate_tools_to_bin,
+};
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
     BranchSummarySettings, CompactionSettings, ImageSettings, ProviderRetrySettings, RetrySettings,
@@ -705,6 +707,50 @@ mod tests {
         )
         .expect("settings should parse");
         assert!(settings.get("apiKeys").is_some());
+    }
+
+    #[test]
+    fn migrates_managed_tool_binaries_to_bin_like_pi() {
+        let dir = temp_dir("tools-to-bin");
+        let tools_dir = dir.join("tools");
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir should be created");
+        std::fs::write(tools_dir.join("fd"), "fd").expect("fd should be written");
+        std::fs::write(tools_dir.join("rg.exe"), "rg").expect("rg should be written");
+        std::fs::write(tools_dir.join("custom"), "custom").expect("custom should be written");
+
+        assert!(migrate_tools_to_bin(&dir).expect("migration should succeed"));
+
+        assert_eq!(
+            std::fs::read_to_string(bin_dir.join("fd")).expect("fd should move"),
+            "fd"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin_dir.join("rg.exe")).expect("rg should move"),
+            "rg"
+        );
+        assert!(!tools_dir.join("fd").exists());
+        assert!(!tools_dir.join("rg.exe").exists());
+        assert!(tools_dir.join("custom").exists());
+    }
+
+    #[test]
+    fn removes_old_managed_tool_when_bin_target_exists_like_pi() {
+        let dir = temp_dir("tools-to-bin-existing");
+        let tools_dir = dir.join("tools");
+        let bin_dir = dir.join("bin");
+        std::fs::create_dir_all(&tools_dir).expect("tools dir should be created");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+        std::fs::write(tools_dir.join("rg"), "old").expect("old rg should be written");
+        std::fs::write(bin_dir.join("rg"), "current").expect("current rg should be written");
+
+        assert!(!migrate_tools_to_bin(&dir).expect("migration should succeed"));
+
+        assert!(!tools_dir.join("rg").exists());
+        assert_eq!(
+            std::fs::read_to_string(bin_dir.join("rg")).expect("current rg should remain"),
+            "current"
+        );
     }
 
     #[test]
