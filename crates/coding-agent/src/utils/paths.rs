@@ -71,6 +71,19 @@ pub fn resolve_path(
     })
 }
 
+pub fn resolve_read_path(
+    input: &str,
+    base_dir: impl AsRef<Path>,
+    options: Option<&PathInputOptions>,
+) -> PathBuf {
+    let resolved = resolve_path(input, base_dir.as_ref(), options);
+    if resolved.exists() {
+        return resolved;
+    }
+
+    match_read_path_variant(&resolved).unwrap_or(resolved)
+}
+
 fn normalize_dot_segments(path: PathBuf) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
@@ -190,6 +203,30 @@ fn normalize_unicode_space_chars(value: &str) -> String {
         .collect()
 }
 
+fn match_read_path_variant(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    let target_name = path.file_name()?.to_string_lossy();
+    let target_key = filename_variant_key(&target_name);
+    let entries = fs::read_dir(parent).ok()?;
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if filename_variant_key(&name) == target_key {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+fn filename_variant_key(value: &str) -> String {
+    normalize_unicode_space_chars(value)
+        .replace(['\u{2018}', '\u{2019}'], "'")
+        .chars()
+        .filter(|ch| *ch != '\u{0301}')
+        .collect::<String>()
+        .to_lowercase()
+}
+
 fn home_dir(override_home: Option<&Path>) -> PathBuf {
     override_home
         .map(Path::to_path_buf)
@@ -306,6 +343,28 @@ mod tests {
             resolve_path("./pkg/../package", "/tmp/work", None),
             PathBuf::from("/tmp/work/package")
         );
+    }
+
+    #[test]
+    fn resolve_read_path_matches_macos_filename_variants_like_pi() {
+        let root = std::env::temp_dir().join(format!("pm-agent-read-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("create temp root");
+        let screenshot = "Screenshot 2024-01-01 at 10.00.00\u{202f}AM.png";
+        fs::write(root.join(screenshot), "").expect("write screenshot file");
+        let curly = "Capture d\u{2019}ecran.txt";
+        fs::write(root.join(curly), "").expect("write curly quote file");
+
+        assert_eq!(
+            resolve_read_path("Screenshot 2024-01-01 at 10.00.00 AM.png", &root, None),
+            root.join(screenshot)
+        );
+        assert_eq!(
+            resolve_read_path("Capture d'ecran.txt", &root, None),
+            root.join(curly)
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
