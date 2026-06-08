@@ -82,6 +82,16 @@ fn split_ref(url: &str) -> (String, Option<String>) {
         };
         let authority = &rest[..path_start];
         let path = &rest[path_start + 1..];
+        if let Some(index) = path.find('#') {
+            let repo_path = &path[..index];
+            let reference = &path[index + 1..];
+            if !repo_path.is_empty() && !reference.is_empty() {
+                return (
+                    format!("{prefix}://{authority}/{repo_path}"),
+                    Some(reference.to_string()),
+                );
+            }
+        }
         if let Some(index) = path.find('@') {
             let repo_path = &path[..index];
             let reference = &path[index + 1..];
@@ -169,6 +179,16 @@ mod tests {
         assert_eq!(source.path, "user/repo");
         assert_eq!(source.reference, None);
         assert!(!source.pinned);
+    }
+
+    #[test]
+    fn parses_explicit_https_git_url_with_hash_ref_like_pi() {
+        let source = parse_git_url("https://github.com/user/repo#main").expect("git source");
+        assert_eq!(source.repo, "https://github.com/user/repo");
+        assert_eq!(source.host, "github.com");
+        assert_eq!(source.path, "user/repo");
+        assert_eq!(source.reference.as_deref(), Some("main"));
+        assert!(source.pinned);
     }
 
     #[test]
