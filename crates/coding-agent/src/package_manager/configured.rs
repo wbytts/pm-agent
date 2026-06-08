@@ -197,21 +197,28 @@ fn string_array_field(
 
 pub fn npm_command_from_settings<S: SettingsStorage>(
     settings: &SettingsManager<S>,
-) -> Option<NpmCommandConfig> {
-    let command = settings.settings().npm_command?;
-    npm_command_from_value_array(command)
+) -> Result<Option<NpmCommandConfig>, String> {
+    settings
+        .settings()
+        .npm_command
+        .map(npm_command_from_value_array)
+        .unwrap_or(Ok(None))
 }
 
-fn npm_command_from_value_array(values: Vec<String>) -> Option<NpmCommandConfig> {
+fn npm_command_from_value_array(values: Vec<String>) -> Result<Option<NpmCommandConfig>, String> {
     let mut values = values.into_iter();
-    let command = values.next()?;
+    let Some(command) = values.next() else {
+        return Ok(None);
+    };
     if command.trim().is_empty() {
-        return None;
+        return Err(
+            "Invalid npmCommand: first array entry must be a non-empty command".to_string(),
+        );
     }
-    Some(NpmCommandConfig {
+    Ok(Some(NpmCommandConfig {
         command,
         args: values.collect(),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -345,10 +352,10 @@ mod tests {
 
         assert_eq!(
             npm_command_from_settings(&settings),
-            Some(NpmCommandConfig {
+            Ok(Some(NpmCommandConfig {
                 command: "corepack".to_string(),
                 args: vec!["pnpm".to_string()],
-            })
+            }))
         );
     }
 }

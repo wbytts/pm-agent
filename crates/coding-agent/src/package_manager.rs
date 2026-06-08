@@ -198,7 +198,12 @@ impl LocalPackageManager {
         let global_settings = settings.global_settings();
         let project_settings = settings.project_settings();
         let package_sources = configured_package_sources(settings, agent_dir, cwd);
-        let npm_command = npm_command.or_else(|| npm_command_from_settings(settings));
+        let npm_command = match npm_command {
+            Some(command) => Some(command),
+            None => {
+                npm_command_from_settings(settings).map_err(PackageLifecycleError::CommandFailed)?
+            }
+        };
         let mut handler = StaticMissingSourceHandler::new(MissingSourceAction::Install);
         let mut resolved = resolve_package_sources(
             runner,
@@ -441,9 +446,9 @@ impl LocalPackageManager {
         settings: &crate::settings_manager::SettingsManager<S>,
         agent_dir: impl AsRef<std::path::Path>,
         cwd: impl AsRef<std::path::Path>,
-    ) -> Vec<PackageUpdate> {
+    ) -> Result<Vec<PackageUpdate>, PackageLifecycleError> {
         if lifecycle::is_offline_mode_enabled() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let agent_dir = agent_dir.as_ref();
         let cwd = cwd.as_ref();
@@ -451,14 +456,16 @@ impl LocalPackageManager {
             .into_iter()
             .map(|(source, scope, _)| ConfiguredUpdateSource { source, scope })
             .collect::<Vec<_>>();
-        let npm_command = npm_command_from_settings(settings).unwrap_or_default();
-        updates::check_configured_updates_with_npm_fallback(
+        let npm_command =
+            npm_command_from_settings(settings).map_err(PackageLifecycleError::CommandFailed)?;
+        let npm_command = npm_command.unwrap_or_default();
+        Ok(updates::check_configured_updates_with_npm_fallback(
             checker,
             agent_dir,
             cwd,
             &sources,
             |npm| legacy_global_npm_package_path(npm, cwd, &npm_command),
-        )
+        ))
     }
 
     pub fn install_and_persist<
@@ -1233,7 +1240,8 @@ mod tests {
 
         let updates = LocalPackageManager::check_available_updates_from_settings(
             &checker, &settings, &agent_dir, &cwd,
-        );
+        )
+        .expect("update check should succeed");
 
         assert_eq!(
             updates,
@@ -1277,7 +1285,8 @@ mod tests {
 
         let updates = LocalPackageManager::check_available_updates_from_settings(
             &checker, &settings, &agent_dir, &cwd,
-        );
+        )
+        .expect("update check should succeed");
 
         assert_eq!(
             updates,
@@ -1287,6 +1296,29 @@ mod tests {
                 kind: PackageKind::Npm,
                 scope: SourceScope::User,
             }]
+        );
+    }
+
+    #[test]
+    fn check_available_updates_from_settings_rejects_empty_npm_command_like_pi() {
+        let settings = crate::settings_manager::SettingsManager::<
+            crate::settings_manager::InMemorySettingsStorage,
+        >::in_memory(json!({
+            "packages": ["npm:pkg"],
+            "npmCommand": [""]
+        }));
+        let checker = FakeUpdateChecker::default();
+
+        let error = LocalPackageManager::check_available_updates_from_settings(
+            &checker, &settings, "/agent", "/work",
+        )
+        .expect_err("empty npmCommand should fail fast");
+
+        assert_eq!(
+            error,
+            PackageLifecycleError::CommandFailed(
+                "Invalid npmCommand: first array entry must be a non-empty command".to_string()
+            )
         );
     }
 

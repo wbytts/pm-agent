@@ -360,7 +360,8 @@ pub fn update_from_settings<S: SettingsStorage, R: PackageCommandRunner>(
     let cwd = cwd.as_ref();
     let sources = configured_update_sources(settings, agent_dir, cwd, source_filter)
         .map_err(PackageLifecycleError::CommandFailed)?;
-    let npm_command = npm_command_from_settings(settings);
+    let npm_command =
+        npm_command_from_settings(settings).map_err(PackageLifecycleError::CommandFailed)?;
     let checker = CommandUpdateChecker::new(cwd, npm_command.clone());
     update_configured_sources_with_checker(
         runner,
@@ -985,6 +986,26 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].command, "corepack");
         assert_eq!(calls[1].args[0], "pnpm");
+    }
+
+    #[test]
+    fn update_from_settings_rejects_empty_npm_command_like_pi() {
+        let runner = FakeRunner::default();
+        let settings = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({
+            "packages": ["npm:pkg"],
+            "npmCommand": [""]
+        }));
+
+        let error = update_from_settings(&runner, &settings, "/agent", "/work", None, |_| {})
+            .expect_err("empty npmCommand should fail fast");
+
+        assert_eq!(
+            error,
+            PackageLifecycleError::CommandFailed(
+                "Invalid npmCommand: first array entry must be a non-empty command".to_string()
+            )
+        );
+        assert!(runner.calls.borrow().is_empty());
     }
 
     #[test]
