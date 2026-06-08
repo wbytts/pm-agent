@@ -66,6 +66,7 @@ impl LanguageModelProvider for OpenAiResponsesProvider {
             Some(api_key),
             &responses_request_headers(&request),
             build_responses_payload(&request, Some(false)),
+            None,
         )
     }
 }
@@ -148,6 +149,7 @@ impl LanguageModelProvider for AzureOpenAiResponsesProvider {
             Some(api_key),
             &request.model.headers,
             build_azure_responses_payload(&request, &deployment_name),
+            None,
         )
     }
 }
@@ -202,6 +204,7 @@ impl LanguageModelProvider for OpenAiCodexResponsesProvider {
             Some(api_key),
             &responses_request_headers(&request),
             build_codex_responses_payload(&request),
+            Some(codex_responses_error_message),
         )
     }
 }
@@ -287,6 +290,7 @@ fn post_responses(
     api_key: Option<String>,
     headers: &BTreeMap<String, String>,
     payload: OpenAiResponsesPayload,
+    error_message: Option<fn(u16, &str, &str) -> String>,
 ) -> AiResult<Vec<StreamEvent>> {
     let client = reqwest::blocking::Client::new();
     let mut request = client.post(url).json(&payload);
@@ -302,7 +306,16 @@ fn post_responses(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().unwrap_or_default();
-        return Err(AiError::Http(format!("status={status}, body={body}")));
+        let message = error_message
+            .map(|format| {
+                format(
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or(""),
+                    &body,
+                )
+            })
+            .unwrap_or_else(|| format!("status={status}, body={body}"));
+        return Err(AiError::Http(message));
     }
 
     if payload.stream {
@@ -548,6 +561,67 @@ fn convert_responses_tools(tools: &[ToolDefinition]) -> Option<Vec<OpenAiRespons
             })
             .collect()
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCodexErrorBody {
+    error: Option<OpenAiCodexErrorDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCodexErrorDetail {
+    code: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    message: Option<String>,
+    plan_type: Option<String>,
+    resets_at: Option<i64>,
+}
+
+fn codex_responses_error_message(status: u16, status_text: &str, body: &str) -> String {
+    let mut message = if body.is_empty() {
+        status_text.to_string()
+    } else {
+        body.to_string()
+    };
+
+    let Ok(parsed) = serde_json::from_str::<OpenAiCodexErrorBody>(body) else {
+        return message;
+    };
+    let Some(error) = parsed.error else {
+        return message;
+    };
+
+    let code = error.code.or(error.kind).unwrap_or_default().to_lowercase();
+    if code.contains("usage_limit_reached")
+        || code.contains("usage_not_included")
+        || code.contains("rate_limit_exceeded")
+        || status == 429
+    {
+        let plan = error
+            .plan_type
+            .as_deref()
+            .map(str::to_lowercase)
+            .map(|plan| format!(" ({plan} plan)"))
+            .unwrap_or_default();
+        let when = error
+            .resets_at
+            .map(|resets_at| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or_default();
+                let mins = ((resets_at - now).max(0) as f64 / 60.0).round() as i64;
+                format!(" Try again in ~{mins} min.")
+            })
+            .unwrap_or_default();
+        return format!("You have hit your ChatGPT usage limit{plan}.{when}");
+    }
+
+    if let Some(error_message) = error.message {
+        message = error_message;
+    }
+    message
 }
 
 fn convert_codex_responses_tools(
@@ -1244,6 +1318,40 @@ mod tests {
             serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
 
         assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn parses_codex_usage_limit_error_like_pi() {
+        let body = json!({
+            "error": {
+                "code": "usage_limit_reached",
+                "message": "Limit reached",
+                "plan_type": "PLUS"
+            }
+        })
+        .to_string();
+
+        let message = codex_responses_error_message(429, "Too Many Requests", &body);
+
+        assert_eq!(
+            message,
+            "You have hit your ChatGPT usage limit (plus plan)."
+        );
+    }
+
+    #[test]
+    fn parses_codex_usage_limit_code_case_insensitively_like_pi() {
+        let body = json!({
+            "error": {
+                "type": "USAGE_NOT_INCLUDED",
+                "message": "Usage not included"
+            }
+        })
+        .to_string();
+
+        let message = codex_responses_error_message(400, "Bad Request", &body);
+
+        assert_eq!(message, "You have hit your ChatGPT usage limit.");
     }
 
     #[test]
