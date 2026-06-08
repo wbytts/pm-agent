@@ -89,12 +89,31 @@ impl<S: SettingsStorage> SettingsManager<S> {
             .map(|path| normalize_path(&path, None).to_string_lossy().to_string())
     }
 
+    pub fn get_last_changelog_version(&self) -> Option<String> {
+        self.get_string("lastChangelogVersion")
+    }
+
+    pub fn set_last_changelog_version(&mut self, version: String) {
+        self.set_global("lastChangelogVersion", Value::String(version));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_default_provider(&self) -> Option<String> {
         self.get_string("defaultProvider")
     }
 
+    pub fn set_default_provider(&mut self, provider: String) {
+        self.set_global("defaultProvider", Value::String(provider));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_default_model(&self) -> Option<String> {
         self.get_string("defaultModel")
+    }
+
+    pub fn set_default_model(&mut self, model_id: String) {
+        self.set_global("defaultModel", Value::String(model_id));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_theme(&self) -> Option<String> {
@@ -126,14 +145,29 @@ impl<S: SettingsStorage> SettingsManager<S> {
             .unwrap_or_else(|| "auto".to_string())
     }
 
+    pub fn set_transport(&mut self, transport: String) {
+        self.set_global("transport", Value::String(transport));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_steering_mode(&self) -> String {
         self.get_string("steeringMode")
             .unwrap_or_else(|| "one-at-a-time".to_string())
     }
 
+    pub fn set_steering_mode(&mut self, mode: String) {
+        self.set_global("steeringMode", Value::String(mode));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_follow_up_mode(&self) -> String {
         self.get_string("followUpMode")
             .unwrap_or_else(|| "one-at-a-time".to_string())
+    }
+
+    pub fn set_follow_up_mode(&mut self, mode: String) {
+        self.set_global("followUpMode", Value::String(mode));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_compaction_settings(&self) -> (bool, u64, u64) {
@@ -1052,6 +1086,41 @@ mod tests {
         assert_eq!(manager.get_shell_path(), None);
         assert!(!manager.get_quiet_startup());
         assert_eq!(manager.get_shell_command_prefix(), None);
+    }
+
+    #[test]
+    fn basic_global_setting_accessors_match_pi_settings() {
+        let mut manager = SettingsManager::in_memory(json!({
+            "lastChangelogVersion": "0.1.0"
+        }));
+
+        assert_eq!(
+            manager.get_last_changelog_version().as_deref(),
+            Some("0.1.0")
+        );
+        manager.set_last_changelog_version("0.2.0".to_string());
+        manager.set_default_provider("openai".to_string());
+        manager.set_default_model("gpt-5".to_string());
+
+        assert_eq!(
+            manager.get_last_changelog_version().as_deref(),
+            Some("0.2.0")
+        );
+        assert_eq!(manager.get_default_provider().as_deref(), Some("openai"));
+        assert_eq!(manager.get_default_model().as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn mode_setting_setters_match_pi_settings() {
+        let mut manager = SettingsManager::in_memory(json!({}));
+
+        manager.set_transport("websocket".to_string());
+        manager.set_steering_mode("all".to_string());
+        manager.set_follow_up_mode("all".to_string());
+
+        assert_eq!(manager.get_transport(), "websocket");
+        assert_eq!(manager.get_steering_mode(), "all");
+        assert_eq!(manager.get_follow_up_mode(), "all");
     }
 
     #[test]
