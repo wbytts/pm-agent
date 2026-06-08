@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -903,7 +903,41 @@ fn entries_to_fork(
             }
         },
     };
-    storage.path_to_root(effective_leaf_id.as_deref())
+    let mut entries = storage.path_to_root(effective_leaf_id.as_deref())?;
+    append_forked_path_labels(storage, &mut entries);
+    Ok(entries)
+}
+
+fn append_forked_path_labels(storage: &impl SessionStorage, entries: &mut Vec<SessionTreeEntry>) {
+    let path_entry_ids = entries
+        .iter()
+        .filter(|entry| !matches!(entry, SessionTreeEntry::Label { .. }))
+        .map(|entry| entry.id().to_string())
+        .collect::<Vec<_>>();
+    let mut used_ids = entries
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect::<BTreeSet<_>>();
+    let mut parent_id = entries.last().map(|entry| entry.id().to_string());
+
+    for target_id in path_entry_ids {
+        let Some(label) = storage.label(&target_id) else {
+            continue;
+        };
+        let Some(timestamp) = storage.label_timestamp(&target_id) else {
+            continue;
+        };
+        let id = generate_entry_id(|candidate| used_ids.contains(candidate));
+        used_ids.insert(id.clone());
+        entries.push(SessionTreeEntry::Label {
+            id: id.clone(),
+            parent_id,
+            timestamp,
+            target_id,
+            label: Some(label),
+        });
+        parent_id = Some(id);
+    }
 }
 
 pub fn build_session_context(path_entries: &[SessionTreeEntry]) -> SessionResult<SessionContext> {
@@ -1560,6 +1594,9 @@ mod tests {
         let first_entry = first
             .append_message(AgentMessage::new(MessageRole::User, "first"))
             .expect("message should append");
+        first
+            .append_label(first_entry.clone(), Some("start".to_string()))
+            .expect("label should append");
 
         let session_dir = root.join("--tmp-pm-agent--");
         let older_path = session_dir.join("2026-01-01T00-00-00-000Z_session-old.jsonl");
@@ -1623,8 +1660,13 @@ mod tests {
         );
         assert_eq!(
             forked.branch(None).expect("fork branch should read").len(),
-            1
+            2
         );
+        assert_eq!(
+            forked.storage().label(&first_entry).as_deref(),
+            Some("start")
+        );
+        assert!(forked.storage().label_timestamp(&first_entry).is_some());
 
         repo.delete(SessionMetadata {
             id: "session-new".to_string(),
