@@ -30,15 +30,19 @@ pub use clipboard::{
 };
 pub use clipboard_image::{
     clipboard_image_read_plan, extension_for_image_mime_type, is_wayland_session,
-    select_preferred_image_mime_type, ClipboardImageReadBackend,
+    is_wsl_environment, read_clipboard_image, read_clipboard_image_with_runner,
+    select_preferred_image_mime_type, write_clipboard_image_for_editor_insert,
+    write_clipboard_image_for_editor_insert_auto, ClipboardImage, ClipboardImageCommandOutput,
+    ClipboardImageReadBackend, ClipboardImageRunner, SystemClipboardImageRunner,
 };
 pub use frontmatter::{parse_frontmatter, strip_frontmatter, ParsedFrontmatter};
 pub use fs_watch::{close_watcher, watch_with_error_handler, FsWatcher, FS_WATCH_RETRY_DELAY_MS};
 pub use git::{parse_git_url, GitSource};
 pub use html::{decode_html_entity, decode_html_entity_at, DecodedHtmlEntity};
 pub use image_dimensions::{
-    detect_image_dimensions, format_image_dimensions_note, get_gif_dimensions, get_jpeg_dimensions,
-    get_png_dimensions, get_webp_dimensions, ImageDimensions,
+    detect_image_dimensions, format_image_dimensions_note, format_resized_image_dimension_note,
+    get_gif_dimensions, get_jpeg_dimensions, get_png_dimensions, get_webp_dimensions,
+    ImageDimensions, ResizedImageDimensions,
 };
 pub use mime::{detect_supported_image_mime_type, detect_supported_image_mime_type_from_file};
 pub use paths::{

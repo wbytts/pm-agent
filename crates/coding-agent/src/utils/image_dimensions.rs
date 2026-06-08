@@ -4,6 +4,15 @@ pub struct ImageDimensions {
     pub height_px: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizedImageDimensions {
+    pub original_width_px: u32,
+    pub original_height_px: u32,
+    pub width_px: u32,
+    pub height_px: u32,
+    pub was_resized: bool,
+}
+
 pub fn detect_image_dimensions(bytes: &[u8], mime_type: &str) -> Option<ImageDimensions> {
     match mime_type {
         "image/png" => get_png_dimensions(bytes),
@@ -19,6 +28,22 @@ pub fn format_image_dimensions_note(dimensions: ImageDimensions) -> String {
         "[Image dimensions: {}x{}]",
         dimensions.width_px, dimensions.height_px
     )
+}
+
+pub fn format_resized_image_dimension_note(dimensions: ResizedImageDimensions) -> Option<String> {
+    if !dimensions.was_resized {
+        return None;
+    }
+
+    let scale = dimensions.original_width_px as f64 / dimensions.width_px as f64;
+    Some(format!(
+        "[Image: original {}x{}, displayed at {}x{}. Multiply coordinates by {:.2} to map to original image.]",
+        dimensions.original_width_px,
+        dimensions.original_height_px,
+        dimensions.width_px,
+        dimensions.height_px,
+        scale,
+    ))
 }
 
 pub fn get_png_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
@@ -125,6 +150,31 @@ mod tests {
                 height_px: 3
             }),
             "[Image dimensions: 2x3]"
+        );
+    }
+
+    #[test]
+    fn formats_resized_image_dimension_note_like_pi() {
+        assert_eq!(
+            format_resized_image_dimension_note(ResizedImageDimensions {
+                original_width_px: 100,
+                original_height_px: 100,
+                width_px: 100,
+                height_px: 100,
+                was_resized: false,
+            }),
+            None
+        );
+
+        assert_eq!(
+            format_resized_image_dimension_note(ResizedImageDimensions {
+                original_width_px: 2000,
+                original_height_px: 1000,
+                width_px: 1000,
+                height_px: 500,
+                was_resized: true,
+            }),
+            Some("[Image: original 2000x1000, displayed at 1000x500. Multiply coordinates by 2.00 to map to original image.]".to_string())
         );
     }
 }
