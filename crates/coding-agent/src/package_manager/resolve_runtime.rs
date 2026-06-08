@@ -1,5 +1,7 @@
 use super::executor::PackageCommandRunner;
-use super::lifecycle::{install, update_with_scope, PackageLifecycleError};
+use super::lifecycle::{
+    install, is_offline_mode_enabled, update_with_scope, PackageLifecycleError,
+};
 use super::manifest::read_pi_manifest;
 use super::paths::display_path;
 use super::resolver::{merge_paths, resolve_source_at_path, sort_resolved_paths};
@@ -220,6 +222,34 @@ fn install_missing_source<R: PackageCommandRunner + ?Sized>(
     npm_command: Option<NpmCommandConfig>,
     on_progress: &mut impl FnMut(ProgressEvent),
 ) -> Result<(), PackageLifecycleError> {
+    install_missing_source_with_offline(
+        runner,
+        handler,
+        agent_dir,
+        cwd,
+        source,
+        scope,
+        npm_command,
+        on_progress,
+        is_offline_mode_enabled(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_missing_source_with_offline<R: PackageCommandRunner + ?Sized>(
+    runner: &R,
+    handler: &mut impl MissingSourceHandler,
+    agent_dir: &Path,
+    cwd: &Path,
+    source: &str,
+    scope: SourceScope,
+    npm_command: Option<NpmCommandConfig>,
+    on_progress: &mut impl FnMut(ProgressEvent),
+    offline: bool,
+) -> Result<(), PackageLifecycleError> {
+    if offline {
+        return Ok(());
+    }
     match handler.on_missing(source) {
         MissingSourceAction::Skip => Ok(()),
         MissingSourceAction::Error => Err(PackageLifecycleError::CommandFailed(format!(
@@ -575,6 +605,33 @@ mod tests {
 
         assert_eq!(handler.seen, vec!["npm:pkg"]);
         assert_eq!(runner.calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn offline_missing_remote_source_skips_without_prompting_handler_like_pi() {
+        let runner = FakeRunner::default();
+        let mut handler = Handler {
+            action: MissingSourceAction::Install,
+            seen: Vec::new(),
+        };
+        let mut events = Vec::new();
+
+        install_missing_source_with_offline(
+            &runner,
+            &mut handler,
+            Path::new("/agent"),
+            Path::new("/work"),
+            "npm:pkg",
+            SourceScope::User,
+            None,
+            &mut |event| events.push(event),
+            true,
+        )
+        .expect("offline missing source should be skipped");
+
+        assert!(handler.seen.is_empty());
+        assert!(runner.calls.borrow().is_empty());
+        assert!(events.is_empty());
     }
 
     #[test]
