@@ -798,7 +798,7 @@ fn collect_manifest_glob_candidates_inner(dir: &Path, base_dir: &Path, result: &
     };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
-        if ignored_entry(&path) {
+        if hidden_entry(&path) {
             continue;
         }
         result.push(path.clone());
@@ -913,4 +913,56 @@ fn ignored_entry(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.starts_with('.') || name == "node_modules")
+}
+
+fn hidden_entry(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn manifest_globs_can_collect_node_modules_entries_like_pi_glob_sync() {
+        let package_dir = temp_dir();
+        let prompt = package_dir.join("node_modules").join("review.md");
+        fs::create_dir_all(prompt.parent().expect("prompt parent")).expect("prompt dir");
+        fs::write(&prompt, "").expect("prompt write");
+        fs::write(
+            package_dir.join("package.json"),
+            r#"{"pi":{"prompts":["node_modules/*.md"]}}"#,
+        )
+        .expect("package json write");
+
+        let resolved = resolve_source_at_path(
+            "local-package",
+            &package_dir,
+            SourceScope::User,
+            SourceOrigin::Package,
+            None,
+        );
+
+        assert_eq!(resolved.prompts.len(), 1);
+        assert_eq!(resolved.prompts[0].path, prompt.to_string_lossy());
+    }
+
+    fn temp_dir() -> PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let count = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pm-agent-resolver-test-{id}-{count}"));
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
 }
