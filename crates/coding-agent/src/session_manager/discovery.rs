@@ -1,6 +1,6 @@
 use super::{default_session_dir, parse_millis, SessionInfo};
 use crate::utils::paths::resolve_path;
-use agent::harness::{JsonlSessionStorage, SessionStorage, SessionTreeEntry};
+use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -114,9 +114,27 @@ pub fn resolve_session_path(
 }
 
 pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
-    let storage = JsonlSessionStorage::open(path).ok()?;
-    let metadata = storage.metadata().clone();
-    let entries = storage.entries();
+    let content = fs::read_to_string(path).ok()?;
+    let entries = parse_session_values_lenient(&content);
+    let header = entries.first()?;
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    let id = header.get("id").and_then(Value::as_str)?.to_string();
+    let header_timestamp = header
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let cwd = header
+        .get("cwd")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let parent_session_path = header
+        .get("parentSession")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
     let stat = path.metadata().ok()?;
     let stat_modified_millis = stat
         .modified()
@@ -128,37 +146,40 @@ pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
     let mut all_messages = Vec::new();
     let mut name = None;
     for entry in &entries {
-        match entry {
-            SessionTreeEntry::SessionInfo {
-                name: next_name, ..
-            } => {
-                name = (!next_name.trim().is_empty()).then_some(next_name.clone());
+        match entry.get("type").and_then(Value::as_str) {
+            Some("session_info") => {
+                name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
             }
-            SessionTreeEntry::Message { message, .. } => {
+            Some("message") => {
                 message_count += 1;
-                if message.role == ai::MessageRole::User && first_message.is_empty() {
-                    first_message = message.content.clone();
+                let Some((role, content)) = message_role_and_content(entry) else {
+                    continue;
+                };
+                if role == "user" && first_message.is_empty() {
+                    first_message = content.clone();
                 }
-                if matches!(
-                    message.role,
-                    ai::MessageRole::User | ai::MessageRole::Assistant
-                ) {
-                    all_messages.push(message.content.clone());
+                if role == "user" || role == "assistant" {
+                    all_messages.push(content);
                 }
             }
             _ => {}
         }
     }
     let modified_millis =
-        session_modified_millis(&entries, &metadata.created_at, stat_modified_millis);
+        session_modified_millis(&entries, &header_timestamp, stat_modified_millis);
 
     Some(SessionInfo {
         path: path.to_string_lossy().to_string(),
-        id: metadata.id,
-        cwd: metadata.cwd.unwrap_or_default(),
+        id,
+        cwd,
         name,
-        parent_session_path: metadata.parent_session_path,
-        created_millis: parse_millis(&metadata.created_at),
+        parent_session_path,
+        created_millis: parse_millis(&header_timestamp),
         modified_millis,
         message_count,
         first_message: if first_message.is_empty() {
@@ -170,22 +191,69 @@ pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
     })
 }
 
+fn parse_session_values_lenient(content: &str) -> Vec<Value> {
+    content
+        .trim()
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                None
+            } else {
+                serde_json::from_str::<Value>(line).ok()
+            }
+        })
+        .collect()
+}
+
+fn message_role_and_content(entry: &Value) -> Option<(String, String)> {
+    let message = entry.get("message")?;
+    let role = message.get("role")?.as_str()?.to_ascii_lowercase();
+    let content = message.get("content")?;
+    let text = if let Some(text) = content.as_str() {
+        text.to_string()
+    } else {
+        content
+            .as_array()?
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    Some((role, text))
+}
+
 fn session_modified_millis(
-    entries: &[SessionTreeEntry],
+    entries: &[Value],
     header_timestamp: &str,
     stat_modified_millis: u128,
 ) -> u128 {
     entries
         .iter()
         .filter_map(|entry| match entry {
-            SessionTreeEntry::Message {
-                timestamp, message, ..
-            } if matches!(
-                message.role,
-                ai::MessageRole::User | ai::MessageRole::Assistant
-            ) =>
+            Value::Object(object)
+                if object.get("type").and_then(Value::as_str) == Some("message") =>
             {
-                Some(parse_millis(timestamp))
+                let role = object
+                    .get("message")
+                    .and_then(|message| message.get("role"))
+                    .and_then(Value::as_str)
+                    .map(str::to_ascii_lowercase)?;
+                if role != "user" && role != "assistant" {
+                    return None;
+                }
+                object
+                    .get("message")
+                    .and_then(|message| message.get("timestamp"))
+                    .and_then(Value::as_u64)
+                    .map(u128::from)
+                    .or_else(|| {
+                        object
+                            .get("timestamp")
+                            .and_then(Value::as_str)
+                            .map(parse_millis)
+                    })
             }
             _ => None,
         })
@@ -365,6 +433,31 @@ mod tests {
         assert_eq!(sessions[0].id, "new-activity");
         assert_eq!(sessions[0].modified_millis, 2000);
         assert_eq!(sessions[1].id, "old-activity");
+    }
+
+    #[test]
+    fn list_sessions_skips_malformed_jsonl_entries_like_pi() {
+        let dir = temp_dir("malformed-lines");
+        let file = dir.join("session.jsonl");
+        fs::write(
+            &file,
+            concat!(
+                r#"{"type":"session","version":3,"id":"malformed-lines","timestamp":"1000","cwd":"/tmp/project"}"#,
+                "\n",
+                "not json\n",
+                r#"{"type":"message","id":"message-1","parentId":null,"timestamp":"2000","message":{"role":"User","content":"kept"}}"#,
+                "\n"
+            ),
+        )
+        .expect("session file should write");
+
+        let sessions = list_sessions_from_dir(&dir);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "malformed-lines");
+        assert_eq!(sessions[0].message_count, 1);
+        assert_eq!(sessions[0].first_message, "kept");
+        assert_eq!(sessions[0].modified_millis, 2000);
     }
 
     fn write_session_file(
