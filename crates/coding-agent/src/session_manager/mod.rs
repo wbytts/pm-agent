@@ -7,6 +7,7 @@ use agent::AgentMessage;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod discovery;
@@ -18,6 +19,7 @@ pub use discovery::{
 };
 
 pub const CURRENT_SESSION_VERSION: u64 = 3;
+static SESSION_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
@@ -549,7 +551,8 @@ fn session_id() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    format!("{millis:x}")
+    let counter = SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{millis:x}-{counter:04x}")
 }
 
 fn timestamp_string() -> String {
