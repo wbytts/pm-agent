@@ -61,7 +61,8 @@ pub use cloudflare::{
     CLOUDFLARE_WORKERS_AI_BASE_URL,
 };
 pub use github_copilot_headers::{
-    build_copilot_dynamic_headers, has_copilot_vision_input, infer_copilot_initiator,
+    build_copilot_dynamic_headers, has_copilot_vision_input, has_copilot_vision_messages,
+    infer_copilot_initiator,
 };
 pub(crate) use google::google_sse_text_to_stream_events;
 pub use google::{GoogleGenerativeAiConfig, GoogleGenerativeAiProvider};
