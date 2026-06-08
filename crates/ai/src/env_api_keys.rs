@@ -43,14 +43,72 @@ pub fn find_env_keys(provider: &str) -> Option<Vec<String>> {
 }
 
 pub fn get_env_api_key(provider: &str) -> Option<String> {
-    find_env_keys(provider)?
-        .first()
-        .and_then(|key| env::var(key).ok())
+    if let Some(key) =
+        find_env_keys(provider).and_then(|keys| keys.first().and_then(|key| env::var(key).ok()))
+    {
+        return Some(key);
+    }
+
+    if provider == "amazon-bedrock" && has_bedrock_ambient_credentials() {
+        return Some("<authenticated>".to_string());
+    }
+
+    None
+}
+
+fn has_bedrock_ambient_credentials() -> bool {
+    env::var_os("AWS_PROFILE").is_some()
+        || env::var_os("AWS_BEARER_TOKEN_BEDROCK").is_some()
+        || env::var_os("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
+        || env::var_os("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some()
+        || env::var_os("AWS_WEB_IDENTITY_TOKEN_FILE").is_some()
+        || (env::var_os("AWS_ACCESS_KEY_ID").is_some()
+            && env::var_os("AWS_SECRET_ACCESS_KEY").is_some())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    const BEDROCK_ENV_KEYS: [&str; 7] = [
+        "AWS_PROFILE",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    ];
+
+    struct EnvRestore(Vec<(&'static str, Option<OsString>)>);
+
+    impl EnvRestore {
+        fn clear(keys: &[&'static str]) -> Self {
+            let saved = keys
+                .iter()
+                .map(|key| (*key, env::var_os(key)))
+                .collect::<Vec<_>>();
+            for key in keys {
+                env::remove_var(key);
+            }
+            Self(saved)
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in &self.0 {
+                if let Some(value) = value {
+                    env::set_var(key, value);
+                } else {
+                    env::remove_var(key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn maps_known_provider_env_keys() {
@@ -63,5 +121,40 @@ mod tests {
             Some(&["GEMINI_API_KEY", "GOOGLE_API_KEY"][..])
         );
         assert!(provider_api_key_env_vars("missing").is_none());
+    }
+
+    #[test]
+    fn bedrock_auth_uses_ambient_aws_credentials_without_reporting_env_keys_like_pi() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _restore = EnvRestore::clear(&BEDROCK_ENV_KEYS);
+
+        env::set_var("AWS_PROFILE", "dev-profile");
+
+        assert_eq!(find_env_keys("amazon-bedrock"), None);
+        assert_eq!(
+            get_env_api_key("amazon-bedrock").as_deref(),
+            Some("<authenticated>")
+        );
+
+        env::remove_var("AWS_PROFILE");
+
+        env::set_var("AWS_ACCESS_KEY_ID", "access");
+        assert_eq!(get_env_api_key("amazon-bedrock"), None);
+
+        env::set_var("AWS_SECRET_ACCESS_KEY", "secret");
+        assert_eq!(
+            get_env_api_key("amazon-bedrock").as_deref(),
+            Some("<authenticated>")
+        );
+
+        env::remove_var("AWS_ACCESS_KEY_ID");
+        env::remove_var("AWS_SECRET_ACCESS_KEY");
+        env::set_var("AWS_BEARER_TOKEN_BEDROCK", "bearer");
+        assert_eq!(
+            get_env_api_key("amazon-bedrock").as_deref(),
+            Some("<authenticated>")
+        );
+
+        env::remove_var("AWS_BEARER_TOKEN_BEDROCK");
     }
 }
