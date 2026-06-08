@@ -1,3 +1,4 @@
+use crate::utils::paths::resolve_path;
 use agent::harness::{
     build_session_context, InMemorySessionStorage, JsonlSessionStorage, SessionContext,
     SessionErrorCode, SessionStorage, SessionTreeEntry,
@@ -116,7 +117,8 @@ impl SessionManager<JsonlSessionStorage> {
     }
 
     pub fn open(path: impl Into<PathBuf>, session_dir: Option<PathBuf>) -> Result<Self, String> {
-        let session_file = path.into();
+        let raw_session_file = path.into();
+        let session_file = resolve_path(&raw_session_file.to_string_lossy(), "", None);
         if !session_file.exists()
             || session_file
                 .metadata()
@@ -631,6 +633,28 @@ mod tests {
         let content = fs::read_to_string(&explicit_path).expect("session file should read");
         assert!(content.contains(r#""type":"session""#));
         assert!(!content.contains("not json"));
+    }
+
+    #[test]
+    fn open_resolves_explicit_path_dot_segments_like_pi() {
+        let dir = temp_dir();
+        let nested = dir.join("nested");
+        fs::create_dir_all(&nested).expect("nested dir should create");
+        let explicit_path = dir.join("explicit.jsonl");
+        let manager = SessionManager::create("/tmp/project", Some(dir.clone()))
+            .expect("session should create");
+        fs::copy(
+            manager.session_file().expect("session file should exist"),
+            &explicit_path,
+        )
+        .expect("session file should copy");
+        let path_with_dot_segments = nested.join("..").join("explicit.jsonl");
+
+        let opened =
+            SessionManager::open(&path_with_dot_segments, None).expect("session should open");
+
+        assert_eq!(opened.session_file(), Some(explicit_path.as_path()));
+        assert_eq!(opened.session_dir(), dir.as_path());
     }
 
     fn temp_dir() -> PathBuf {
