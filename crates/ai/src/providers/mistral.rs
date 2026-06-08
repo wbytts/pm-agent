@@ -238,6 +238,7 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
     let mut response_id = None;
     let mut stop_reason = AssistantStopReason::Stop;
     let mut next_content_index = 0usize;
+    let mut current_text_open = false;
     let mut tool_states = Vec::<MistralToolCallStreamState>::new();
 
     for chunk in chunks {
@@ -250,14 +251,15 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
                 stop_reason = map_mistral_chat_stop_reason(reason);
             }
             if let Some(delta) = choice.delta {
-                for text in mistral_delta_texts(delta.content) {
-                    if text.is_empty() {
-                        continue;
-                    }
-                    content.push_str(&text);
-                    events.push(StreamEvent::TextDelta { text });
-                }
+                process_mistral_delta_content(
+                    delta.content,
+                    &mut events,
+                    &mut content,
+                    &mut next_content_index,
+                    &mut current_text_open,
+                )?;
                 for tool_call in delta.tool_calls {
+                    current_text_open = false;
                     let state_index = ensure_mistral_tool_call_state(
                         &mut tool_states,
                         &mut next_content_index,
@@ -450,9 +452,100 @@ fn parse_mistral_sse_text(input: &str) -> Result<Vec<MistralStreamChunk>, String
     Ok(chunks)
 }
 
-fn mistral_delta_texts(content: Option<Value>) -> Vec<String> {
+fn process_mistral_delta_content(
+    content: Option<Value>,
+    events: &mut Vec<StreamEvent>,
+    text_content: &mut String,
+    next_content_index: &mut usize,
+    current_text_open: &mut bool,
+) -> Result<(), String> {
     match content {
-        Some(Value::String(text)) => vec![text],
+        Some(Value::String(text)) => push_mistral_text_delta(
+            events,
+            text_content,
+            next_content_index,
+            current_text_open,
+            text,
+        ),
+        Some(Value::Array(items)) => {
+            for item in items {
+                match item {
+                    Value::String(text) => {
+                        push_mistral_text_delta(
+                            events,
+                            text_content,
+                            next_content_index,
+                            current_text_open,
+                            text,
+                        )?;
+                    }
+                    Value::Object(mut object) => match object.get("type").and_then(Value::as_str) {
+                        Some("thinking") => {
+                            let thinking = mistral_thinking_text(object.remove("thinking"));
+                            if thinking.is_empty() {
+                                continue;
+                            }
+                            *current_text_open = false;
+                            let content_index = *next_content_index;
+                            *next_content_index += 1;
+                            events.push(StreamEvent::ThinkingStart { content_index });
+                            events.push(StreamEvent::ThinkingDelta {
+                                content_index,
+                                delta: thinking.clone(),
+                            });
+                            events.push(StreamEvent::ThinkingEnd {
+                                content_index,
+                                content: thinking,
+                                thinking_signature: None,
+                                redacted: false,
+                            });
+                        }
+                        _ => {
+                            if let Some(text) = object
+                                .remove("text")
+                                .and_then(|value| value.as_str().map(str::to_string))
+                            {
+                                push_mistral_text_delta(
+                                    events,
+                                    text_content,
+                                    next_content_index,
+                                    current_text_open,
+                                    text,
+                                )?;
+                            }
+                        }
+                    },
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn push_mistral_text_delta(
+    events: &mut Vec<StreamEvent>,
+    text_content: &mut String,
+    next_content_index: &mut usize,
+    current_text_open: &mut bool,
+    text: String,
+) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    if !*current_text_open {
+        *next_content_index += 1;
+        *current_text_open = true;
+    }
+    text_content.push_str(&text);
+    events.push(StreamEvent::TextDelta { text });
+    Ok(())
+}
+
+fn mistral_thinking_text(value: Option<Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text,
         Some(Value::Array(items)) => items
             .into_iter()
             .filter_map(|item| match item {
@@ -463,7 +556,7 @@ fn mistral_delta_texts(content: Option<Value>) -> Vec<String> {
                 _ => None,
             })
             .collect(),
-        _ => Vec::new(),
+        _ => String::new(),
     }
 }
 
@@ -654,6 +747,45 @@ mod tests {
             stream.result().map(|message| message.stop_reason.clone()),
             Some(AssistantStopReason::ToolUse)
         );
+    }
+
+    #[test]
+    fn mistral_stream_preserves_thinking_content_like_pi() {
+        let sse = "data: {\"id\":\"cmpl_think_1\",\"choices\":[{\"delta\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"plan\"}]},{\"type\":\"text\",\"text\":\"answer\"}]},\"finish_reason\":\"stop\"}]}\n\n";
+
+        let events = mistral_sse_text_to_stream_events(sse).expect("sse should parse");
+
+        assert!(matches!(
+            &events[0],
+            StreamEvent::ThinkingStart { content_index } if *content_index == 0
+        ));
+        assert!(matches!(
+            &events[1],
+            StreamEvent::ThinkingDelta {
+                content_index,
+                delta,
+            } if *content_index == 0 && delta == "plan"
+        ));
+        assert!(matches!(
+            &events[2],
+            StreamEvent::ThinkingEnd {
+                content_index,
+                content,
+                ..
+            } if *content_index == 0 && content == "plan"
+        ));
+        assert!(matches!(
+            &events[3],
+            StreamEvent::TextDelta { text } if text == "answer"
+        ));
+
+        let stream = crate::provider_events_to_stream(events).expect("stream");
+        let message = stream.result().expect("final message");
+        assert_eq!(message.content, "answer");
+        assert!(matches!(
+            &message.content_blocks[0],
+            AssistantContentBlock::Thinking(thinking) if thinking.thinking == "plan"
+        ));
     }
 
     #[test]
