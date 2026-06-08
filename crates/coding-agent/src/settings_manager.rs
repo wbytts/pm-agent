@@ -379,6 +379,15 @@ impl<S: SettingsStorage> SettingsManager<S> {
         self.get_bool("enableSkillCommands").unwrap_or(true)
     }
 
+    pub fn set_enable_skill_commands(&mut self, enabled: bool) {
+        self.set_global("enableSkillCommands", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
+    }
+
+    pub fn get_thinking_budgets(&self) -> Option<Value> {
+        self.settings.get("thinkingBudgets").cloned()
+    }
+
     pub fn get_show_images(&self) -> bool {
         self.get_nested_bool("terminal", "showImages")
             .unwrap_or(true)
@@ -395,9 +404,19 @@ impl<S: SettingsStorage> SettingsManager<S> {
             .unwrap_or(60)
     }
 
+    pub fn set_image_width_cells(&mut self, width: u64) {
+        self.set_global_nested("terminal", "imageWidthCells", Value::from(width.max(1)));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_clear_on_shrink(&self) -> bool {
         self.get_nested_bool("terminal", "clearOnShrink")
             .unwrap_or_else(|| std::env::var("PI_CLEAR_ON_SHRINK").is_ok_and(|value| value == "1"))
+    }
+
+    pub fn set_clear_on_shrink(&mut self, enabled: bool) {
+        self.set_global_nested("terminal", "clearOnShrink", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_show_terminal_progress(&self) -> bool {
@@ -405,13 +424,28 @@ impl<S: SettingsStorage> SettingsManager<S> {
             .unwrap_or(false)
     }
 
+    pub fn set_show_terminal_progress(&mut self, enabled: bool) {
+        self.set_global_nested("terminal", "showTerminalProgress", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_image_auto_resize(&self) -> bool {
         self.get_nested_bool("images", "autoResize").unwrap_or(true)
+    }
+
+    pub fn set_image_auto_resize(&mut self, enabled: bool) {
+        self.set_global_nested("images", "autoResize", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_block_images(&self) -> bool {
         self.get_nested_bool("images", "blockImages")
             .unwrap_or(false)
+    }
+
+    pub fn set_block_images(&mut self, blocked: bool) {
+        self.set_global_nested("images", "blockImages", Value::Bool(blocked));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_enable_install_telemetry(&self) -> bool {
@@ -461,6 +495,11 @@ impl<S: SettingsStorage> SettingsManager<S> {
         }
     }
 
+    pub fn set_double_escape_action(&mut self, action: String) {
+        self.set_global("doubleEscapeAction", Value::String(action));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_tree_filter_mode(&self) -> String {
         match self.get_string("treeFilterMode").as_deref() {
             Some("default" | "no-tools" | "user-only" | "labeled-only" | "all") => {
@@ -468,6 +507,11 @@ impl<S: SettingsStorage> SettingsManager<S> {
             }
             _ => "default".to_string(),
         }
+    }
+
+    pub fn set_tree_filter_mode(&mut self, mode: String) {
+        self.set_global("treeFilterMode", Value::String(mode));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_show_hardware_cursor(&self) -> bool {
@@ -1270,6 +1314,38 @@ mod tests {
         assert_eq!(manager.get_shell_path(), None);
         assert_eq!(manager.get_shell_command_prefix(), None);
         assert_eq!(manager.get_npm_command(), None);
+    }
+
+    #[test]
+    fn terminal_image_tree_and_thinking_settings_match_pi_settings() {
+        let mut manager = SettingsManager::in_memory(json!({
+            "thinkingBudgets": {
+                "high": 12000
+            }
+        }));
+
+        assert_eq!(
+            manager.get_thinking_budgets(),
+            Some(json!({ "high": 12000 }))
+        );
+
+        manager.set_enable_skill_commands(false);
+        manager.set_image_width_cells(0);
+        manager.set_clear_on_shrink(true);
+        manager.set_show_terminal_progress(true);
+        manager.set_image_auto_resize(false);
+        manager.set_block_images(true);
+        manager.set_double_escape_action("fork".to_string());
+        manager.set_tree_filter_mode("user-only".to_string());
+
+        assert!(!manager.get_enable_skill_commands());
+        assert_eq!(manager.get_image_width_cells(), 1);
+        assert!(manager.get_clear_on_shrink());
+        assert!(manager.get_show_terminal_progress());
+        assert!(!manager.get_image_auto_resize());
+        assert!(manager.get_block_images());
+        assert_eq!(manager.get_double_escape_action(), "fork");
+        assert_eq!(manager.get_tree_filter_mode(), "user-only");
     }
 
     #[test]
