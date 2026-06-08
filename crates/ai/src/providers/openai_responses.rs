@@ -355,7 +355,13 @@ fn responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
 }
 
 fn responses_prompt_cache_retention(request: &StreamRequest) -> Option<String> {
-    (responses_cache_retention(request) == Some("long")).then(|| "24h".to_string())
+    let supports_long = request
+        .model
+        .compat
+        .get("supportsLongCacheRetention")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    (supports_long && responses_cache_retention(request) == Some("long")).then(|| "24h".to_string())
 }
 
 fn responses_cache_retention(request: &StreamRequest) -> Option<&str> {
@@ -924,6 +930,34 @@ mod tests {
             .expect("payload json");
 
         assert!(value.get("prompt_cache_key").is_none());
+        assert!(value.get("prompt_cache_retention").is_none());
+    }
+
+    #[test]
+    fn omits_responses_prompt_cache_retention_when_unsupported_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            compat: BTreeMap::from([("supportsLongCacheRetention".to_string(), json!(false))]),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("cacheRetention".to_string(), json!("long"))]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
         assert!(value.get("prompt_cache_retention").is_none());
     }
 
