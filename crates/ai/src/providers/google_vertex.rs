@@ -1001,7 +1001,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Finished { message }) if message.content == "hi"
+            Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "hi"
         ));
     }
 

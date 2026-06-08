@@ -126,6 +126,8 @@ struct GoogleSystemInstruction {
 
 #[derive(Debug, Deserialize)]
 struct GoogleGenerateContentResponse {
+    #[serde(default, rename = "responseId")]
+    response_id: Option<String>,
     candidates: Vec<GoogleCandidate>,
     #[serde(default, rename = "usageMetadata")]
     usage_metadata: Option<GoogleUsageMetadata>,
@@ -213,8 +215,12 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
     let mut next_content_index = 0usize;
     let mut current_text_open = false;
     let mut generated_tool_call_counter = 0usize;
+    let mut response_id = None;
 
     for chunk in chunks {
+        if response_id.is_none() {
+            response_id = chunk.response_id.filter(|value| !value.is_empty());
+        }
         for candidate in chunk.candidates {
             for part in candidate.content.parts {
                 if let Some(text) = part.text.clone().filter(|text| !text.is_empty()) {
@@ -304,10 +310,22 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
     if content.is_empty() {
         return Err("Google Generative AI 输出文本缺失".to_string());
     }
-    events.push(StreamEvent::Finished {
-        message: Message {
-            role: MessageRole::Assistant,
-            content,
+    events.push(StreamEvent::RichFinished {
+        message: RichAssistantMessage {
+            content: vec![AssistantContentBlock::Text(TextContent {
+                text: content,
+                text_signature: None,
+            })],
+            api: "google-generative-ai".to_string(),
+            provider: "google".to_string(),
+            model: String::new(),
+            response_model: None,
+            response_id,
+            usage: Usage::default(),
+            stop_reason: AssistantStopReason::Stop,
+            error_message: None,
+            diagnostics: Vec::new(),
+            timestamp_millis: 0,
         },
     });
     Ok(events)
@@ -504,8 +522,23 @@ mod tests {
         ));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Finished { message }) if message.content == "hello"
+            Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "hello"
         ));
+    }
+
+    #[test]
+    fn google_stream_preserves_response_id_like_pi() {
+        let sse = "data: {\"responseId\":\"resp_google_1\",\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n";
+
+        let events = google_sse_text_to_stream_events(sse).expect("sse should parse");
+        let stream = crate::provider_events_to_stream(events).expect("stream");
+
+        assert_eq!(
+            stream
+                .result()
+                .and_then(|message| message.response_id.as_deref()),
+            Some("resp_google_1")
+        );
     }
 
     #[test]
@@ -562,7 +595,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Finished { message }) if message.content == "answer"
+            Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "answer"
         ));
     }
 
@@ -603,7 +636,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Finished { message }) if message.content == "checking"
+            Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "checking"
         ));
     }
 }

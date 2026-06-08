@@ -2,9 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 
+use crate::conversation::{AssistantContentBlock, RichAssistantMessage, TextContent};
 use crate::providers::chat_role;
 use crate::types::{
-    validate_model, AiError, AiResult, LanguageModelProvider, Message, MessageRole,
+    validate_model, AiError, AiResult, AssistantStopReason, LanguageModelProvider,
     ModelThinkingLevel, StreamEvent, StreamRequest, ToolDefinition, Usage,
 };
 
@@ -185,6 +186,7 @@ struct MistralToolFunction {
 
 #[derive(Debug, Deserialize)]
 struct MistralStreamChunk {
+    id: Option<String>,
     choices: Vec<MistralStreamChoice>,
     usage: Option<MistralStreamUsage>,
 }
@@ -215,8 +217,12 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
     let mut events = Vec::new();
     let mut content = String::new();
     let mut saw_finish = false;
+    let mut response_id = None;
 
     for chunk in chunks {
+        if response_id.is_none() {
+            response_id = chunk.id.clone().filter(|value| !value.is_empty());
+        }
         if let Some(choice) = chunk.choices.into_iter().next() {
             if choice.finish_reason.is_some() {
                 saw_finish = true;
@@ -255,10 +261,22 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
     if !saw_finish {
         return Err("Mistral stream ended without finish_reason".to_string());
     }
-    events.push(StreamEvent::Finished {
-        message: Message {
-            role: MessageRole::Assistant,
-            content,
+    events.push(StreamEvent::RichFinished {
+        message: RichAssistantMessage {
+            content: vec![AssistantContentBlock::Text(TextContent {
+                text: content,
+                text_signature: None,
+            })],
+            api: "mistral".to_string(),
+            provider: "mistral".to_string(),
+            model: String::new(),
+            response_model: None,
+            response_id,
+            usage: Usage::default(),
+            stop_reason: AssistantStopReason::Stop,
+            error_message: None,
+            diagnostics: Vec::new(),
+            timestamp_millis: 0,
         },
     });
     Ok(events)
@@ -311,6 +329,7 @@ fn mistral_delta_texts(content: Option<Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::MessageRole;
 
     fn user_message() -> MistralChatMessage {
         MistralChatMessage {
@@ -421,8 +440,23 @@ mod tests {
         ));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Finished { message }) if message.content == "hello"
+            Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "hello"
         ));
+    }
+
+    #[test]
+    fn mistral_stream_preserves_response_id_like_pi() {
+        let sse = "data: {\"id\":\"cmpl_resp_1\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n";
+
+        let events = mistral_sse_text_to_stream_events(sse).expect("sse should parse");
+        let stream = crate::provider_events_to_stream(events).expect("stream");
+
+        assert_eq!(
+            stream
+                .result()
+                .and_then(|message| message.response_id.as_deref()),
+            Some("cmpl_resp_1")
+        );
     }
 
     #[test]
