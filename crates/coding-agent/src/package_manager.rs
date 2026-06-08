@@ -1404,6 +1404,102 @@ mod tests {
     }
 
     #[test]
+    fn auto_discovers_project_agents_skills_up_to_filesystem_root_without_git_like_pi() {
+        let root = temp_dir();
+        let agent_dir = temp_dir();
+        let project_base_dir = root.join(".pi");
+        let cwd = root.join("non-repo").join("a").join("b");
+        fs::create_dir_all(&cwd).expect("cwd should exist");
+
+        let root_skill = root
+            .join("non-repo")
+            .join(".agents")
+            .join("skills")
+            .join("root")
+            .join("SKILL.md");
+        let middle_skill = root
+            .join("non-repo")
+            .join("a")
+            .join(".agents")
+            .join("skills")
+            .join("middle")
+            .join("SKILL.md");
+        write_file(&root_skill);
+        write_file(&middle_skill);
+
+        let resolved = resolve_auto_discovered_resources(
+            &agent_dir,
+            &project_base_dir,
+            &cwd,
+            None,
+            None,
+            None,
+        );
+
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &root_skill) && resource.enabled));
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &middle_skill) && resource.enabled));
+    }
+
+    #[test]
+    fn auto_discovers_project_agents_skills_only_to_git_root_like_pi() {
+        let root = temp_dir();
+        let agent_dir = temp_dir();
+        let project_base_dir = root.join("repo").join(".pi");
+        let repo_root = root.join("repo");
+        let cwd = repo_root.join("packages").join("feature");
+        fs::create_dir_all(cwd.as_path()).expect("cwd should exist");
+        fs::create_dir_all(repo_root.join(".git")).expect("git dir should exist");
+
+        let above_repo_skill = root
+            .join(".agents")
+            .join("skills")
+            .join("above-repo")
+            .join("SKILL.md");
+        let repo_skill = repo_root
+            .join(".agents")
+            .join("skills")
+            .join("repo-root")
+            .join("SKILL.md");
+        let nested_skill = repo_root
+            .join("packages")
+            .join(".agents")
+            .join("skills")
+            .join("nested")
+            .join("SKILL.md");
+        write_file(&above_repo_skill);
+        write_file(&repo_skill);
+        write_file(&nested_skill);
+
+        let resolved = resolve_auto_discovered_resources(
+            &agent_dir,
+            &project_base_dir,
+            &cwd,
+            None,
+            None,
+            None,
+        );
+
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &repo_skill) && resource.enabled));
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &nested_skill) && resource.enabled));
+        assert!(!resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &above_repo_skill)));
+    }
+
+    #[test]
     fn auto_discovered_prompts_and_themes_only_scan_top_level_like_pi() {
         let agent_dir = temp_dir();
         let project_base_dir = temp_dir().join(".pi");
@@ -1794,5 +1890,9 @@ mod tests {
             fs::create_dir_all(parent).expect("parent should be created");
         }
         fs::write(path, "").expect("file should be written");
+    }
+
+    fn same_existing_path(left: impl AsRef<Path>, right: impl AsRef<Path>) -> bool {
+        fs::canonicalize(left.as_ref()).ok() == fs::canonicalize(right.as_ref()).ok()
     }
 }
