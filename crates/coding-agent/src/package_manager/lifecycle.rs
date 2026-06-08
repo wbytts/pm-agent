@@ -237,14 +237,9 @@ fn update_configured_sources_with_checker<R: PackageCommandRunner, C: UpdateChec
         match parse_source(&entry.source) {
             ParsedSource::Npm(npm) => {
                 if npm.pinned
-                    || !should_update_npm_source(
-                        checker,
-                        agent_dir,
-                        cwd,
-                        &npm,
-                        entry.scope,
-                        |npm| super::legacy_global_npm_package_path(npm, cwd, &npm_command),
-                    )
+                    || !should_update_npm_source(checker, agent_dir, cwd, &npm, entry.scope, |_| {
+                        None
+                    })
                 {
                     continue;
                 }
@@ -1046,7 +1041,8 @@ mod tests {
     }
 
     #[test]
-    fn update_from_settings_uses_legacy_global_npm_path_like_pi() {
+    fn update_from_settings_ignores_legacy_global_npm_path_when_managed_install_is_missing_like_pi()
+    {
         let root = temp_dir();
         let cwd = temp_dir();
         let global_root = root.join("global").join("node_modules");
@@ -1075,9 +1071,10 @@ mod tests {
         update_from_settings(&runner, &settings, &root.join("agent"), &cwd, None, |_| {})
             .expect("settings update should succeed");
 
-        assert!(
-            runner.calls.borrow().is_empty(),
-            "npm install should be skipped when legacy global install is already latest"
+        assert_eq!(
+            runner.calls.borrow().len(),
+            2,
+            "npm update should run when managed install is missing"
         );
     }
 
