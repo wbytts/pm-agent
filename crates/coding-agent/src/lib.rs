@@ -4,6 +4,7 @@ pub mod auth_guidance;
 pub mod auth_storage;
 pub mod bash_execution;
 pub mod bash_executor;
+pub mod bun;
 pub mod cli;
 pub mod compaction;
 pub mod config_selector;
