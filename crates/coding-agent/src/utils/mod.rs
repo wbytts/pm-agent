@@ -10,6 +10,7 @@ pub mod frontmatter;
 pub mod fs_watch;
 pub mod git;
 pub mod html;
+pub mod image_convert;
 pub mod image_dimensions;
 pub mod image_resize;
 pub mod mime;
@@ -54,6 +55,7 @@ pub use frontmatter::{parse_frontmatter, strip_frontmatter, ParsedFrontmatter};
 pub use fs_watch::{close_watcher, watch_with_error_handler, FsWatcher, FS_WATCH_RETRY_DELAY_MS};
 pub use git::{parse_git_url, GitSource};
 pub use html::{decode_html_entity, decode_html_entity_at, DecodedHtmlEntity};
+pub use image_convert::{convert_to_png, ConvertedPngImage};
 pub use image_dimensions::{
     detect_image_dimensions, format_image_dimensions_note, format_resized_image_dimension_note,
     get_gif_dimensions, get_jpeg_dimensions, get_png_dimensions, get_webp_dimensions,
