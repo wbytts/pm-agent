@@ -132,6 +132,47 @@ fn lists_finds_and_greps_workspace_files() {
 }
 
 #[test]
+fn grep_defaults_to_regex_and_literal_keeps_pattern_verbatim_like_pi() {
+    let workspace = temp_workspace();
+    execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "notes.txt".to_string(),
+            content: "hello\nh.llo\n".to_string(),
+        },
+    )
+    .expect("write should work");
+
+    let regex = execute_tool(
+        &workspace,
+        CodingToolRequest::Grep {
+            pattern: "h.llo".to_string(),
+            path: Some("notes.txt".to_string()),
+            ignore_case: false,
+            literal: false,
+            limit: None,
+        },
+    )
+    .expect("regex grep should work");
+    assert!(regex.output.contains("notes.txt:1: hello"));
+    assert!(regex.output.contains("notes.txt:2: h.llo"));
+
+    let literal = execute_tool(
+        &workspace,
+        CodingToolRequest::Grep {
+            pattern: "h.llo".to_string(),
+            path: Some("notes.txt".to_string()),
+            ignore_case: false,
+            literal: true,
+            limit: None,
+        },
+    )
+    .expect("literal grep should work");
+    assert!(!literal.output.contains("notes.txt:1: hello"));
+    assert!(literal.output.contains("notes.txt:2: h.llo"));
+}
+
+#[test]
 fn read_truncates_large_text_outputs() {
     let workspace = temp_workspace();
     let content = (0..2100)

@@ -19,6 +19,16 @@ pub fn grep_files(
         return Err(CodingAgentError::MissingFile(root.display().to_string()));
     }
     let limit = limit.unwrap_or(100);
+    let regex = if literal {
+        None
+    } else {
+        Some(
+            regex::RegexBuilder::new(&pattern)
+                .case_insensitive(ignore_case)
+                .build()
+                .map_err(|error| CodingAgentError::File(format!("无效 grep 正则：{error}")))?,
+        )
+    };
     let mut files = Vec::new();
     if root.is_file() {
         files.push(root.clone());
@@ -39,8 +49,15 @@ pub fn grep_files(
                 reached_limit = true;
                 break;
             }
-            if line_matches(line, &pattern, ignore_case, literal) {
-                let relative = relative_display(&root, &file);
+            if line_matches(line, &pattern, ignore_case, literal, regex.as_ref()) {
+                let relative = if root.is_file() {
+                    file.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string()
+                } else {
+                    relative_display(&root, &file)
+                };
                 let (line_text, was_truncated) = truncate_line(line, GREP_MAX_LINE_LENGTH);
                 lines_truncated |= was_truncated;
                 output.push(format!("{}:{}: {}", relative, index + 1, line_text));
@@ -96,17 +113,18 @@ fn collect_files(
     Ok(())
 }
 
-fn line_matches(line: &str, pattern: &str, ignore_case: bool, literal: bool) -> bool {
+fn line_matches(
+    line: &str,
+    pattern: &str,
+    ignore_case: bool,
+    literal: bool,
+    regex: Option<&regex::Regex>,
+) -> bool {
     if literal {
         if ignore_case {
             return line.to_lowercase().contains(&pattern.to_lowercase());
         }
         return line.contains(pattern);
     }
-    // 当前 Rust 侧不引入 regex 依赖，保持现有子串搜索语义。
-    if ignore_case {
-        line.to_lowercase().contains(&pattern.to_lowercase())
-    } else {
-        line.contains(pattern)
-    }
+    regex.is_some_and(|regex| regex.is_match(line))
 }
