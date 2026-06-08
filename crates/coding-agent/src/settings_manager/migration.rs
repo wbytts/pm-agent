@@ -4,6 +4,14 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use super::CONFIG_DIR_NAME;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupMigrationResult {
+    pub migrated_auth_providers: Vec<String>,
+    pub deprecation_warnings: Vec<String>,
+}
+
 pub fn migrate_settings(mut settings: Value) -> Value {
     let object = object_mut(&mut settings);
     if let Some(queue_mode) = object.remove("queueMode") {
@@ -27,6 +35,30 @@ pub fn migrate_settings(mut settings: Value) -> Value {
     migrate_legacy_skills(object);
     migrate_retry_max_delay(object);
     settings
+}
+
+pub fn run_startup_migrations(
+    agent_dir: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+) -> Result<StartupMigrationResult, String> {
+    let agent_dir = agent_dir.as_ref();
+    let cwd = cwd.as_ref();
+    let project_dir = cwd.join(CONFIG_DIR_NAME);
+
+    let migrated_auth_providers = migrate_auth_to_auth_json(agent_dir)?;
+    migrate_sessions_from_agent_root(agent_dir)?;
+    migrate_tools_to_bin(agent_dir)?;
+    migrate_keybindings_config_file(agent_dir.join("keybindings.json"))?;
+    migrate_commands_to_prompts(agent_dir)?;
+    migrate_commands_to_prompts(&project_dir)?;
+
+    let mut deprecation_warnings = deprecated_extension_dir_warnings(agent_dir, "Global")?;
+    deprecation_warnings.extend(deprecated_extension_dir_warnings(&project_dir, "Project")?);
+
+    Ok(StartupMigrationResult {
+        migrated_auth_providers,
+        deprecation_warnings,
+    })
 }
 
 pub fn migrate_commands_to_prompts(base_dir: impl AsRef<Path>) -> Result<bool, String> {

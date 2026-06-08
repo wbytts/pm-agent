@@ -11,7 +11,7 @@ pub use merge::deep_merge_settings;
 pub use migration::{
     deprecated_extension_dir_warnings, migrate_auth_to_auth_json, migrate_commands_to_prompts,
     migrate_keybindings_config_file, migrate_sessions_from_agent_root, migrate_settings,
-    migrate_tools_to_bin,
+    migrate_tools_to_bin, run_startup_migrations,
 };
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
@@ -889,6 +889,72 @@ mod tests {
         assert!(deprecated_extension_dir_warnings(&dir, "Project")
             .expect("warnings should collect")
             .is_empty());
+    }
+
+    #[test]
+    fn runs_startup_migrations_like_pi() {
+        let root = temp_dir("startup-migrations");
+        let agent_dir = root.join("agent");
+        let cwd = root.join("project");
+        let project_config_dir = cwd.join(CONFIG_DIR_NAME);
+        std::fs::create_dir_all(agent_dir.join("commands")).expect("global commands dir");
+        std::fs::create_dir_all(agent_dir.join("tools")).expect("global tools dir");
+        std::fs::create_dir_all(project_config_dir.join("commands")).expect("project commands dir");
+        std::fs::create_dir_all(agent_dir.join("hooks")).expect("hooks dir");
+        std::fs::create_dir_all(project_config_dir.join("tools")).expect("project tools dir");
+        std::fs::write(project_config_dir.join("tools").join("custom"), "").expect("custom tool");
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            json!({
+                "apiKeys": {
+                    "openai": "sk-test"
+                }
+            })
+            .to_string(),
+        )
+        .expect("settings should be written");
+        std::fs::write(agent_dir.join("tools").join("fd"), "fd").expect("fd should be written");
+        std::fs::write(
+            agent_dir.join("keybindings.json"),
+            json!({
+                "toggleThinking": ["ctrl+t"]
+            })
+            .to_string(),
+        )
+        .expect("keybindings should be written");
+        std::fs::write(
+            agent_dir.join("old.jsonl"),
+            r#"{"type":"session","cwd":"/tmp/project"}"#.to_string() + "\n{}\n",
+        )
+        .expect("session should be written");
+
+        let result =
+            run_startup_migrations(&agent_dir, &cwd).expect("startup migrations should succeed");
+
+        assert_eq!(result.migrated_auth_providers, vec!["openai"]);
+        assert_eq!(
+            result.deprecation_warnings,
+            vec![
+                "Global hooks/ directory found. Hooks have been renamed to extensions."
+                    .to_string(),
+                "Project tools/ directory contains custom tools. Custom tools have been merged into extensions."
+                    .to_string()
+            ]
+        );
+        assert!(agent_dir.join("prompts").exists());
+        assert!(project_config_dir.join("prompts").exists());
+        assert!(agent_dir.join("bin").join("fd").exists());
+        assert!(agent_dir
+            .join("sessions")
+            .join("--tmp-project--")
+            .join("old.jsonl")
+            .exists());
+        let keybindings: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(agent_dir.join("keybindings.json"))
+                .expect("keybindings should remain"),
+        )
+        .expect("keybindings should parse");
+        assert_eq!(keybindings["app.thinking.toggle"], json!(["ctrl+t"]));
     }
 
     #[test]
