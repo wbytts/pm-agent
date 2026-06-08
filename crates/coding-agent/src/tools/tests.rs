@@ -198,6 +198,24 @@ fn find_path_globs_match_nested_paths_like_pi_fd_full_path_mode() {
 }
 
 #[test]
+fn ls_resolves_pi_path_input_variants_inside_workspace() {
+    let workspace = temp_workspace();
+    fs::create_dir_all(workspace.cwd.join("space name")).expect("directory should be written");
+    fs::write(workspace.cwd.join("space name/file.txt"), "ok").expect("file should be written");
+
+    let listed = execute_tool(
+        &workspace,
+        CodingToolRequest::Ls {
+            path: Some("@space\u{00a0}name".to_string()),
+            limit: None,
+        },
+    )
+    .expect("ls should work");
+
+    assert_eq!(listed.output, "file.txt");
+}
+
+#[test]
 fn read_truncates_large_text_outputs() {
     let workspace = temp_workspace();
     let content = (0..2100)

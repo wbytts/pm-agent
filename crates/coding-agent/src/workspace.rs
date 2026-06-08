@@ -17,8 +17,18 @@ pub(crate) fn resolve_workspace_path(
     workspace: &CodingWorkspace,
     path: &str,
 ) -> CodingAgentResult<PathBuf> {
-    let relative = PathBuf::from(path);
-    if relative.is_absolute() || path.split('/').any(|part| part == "..") {
+    let options = PathInputOptions {
+        trim: true,
+        strip_at_prefix: true,
+        normalize_unicode_spaces: true,
+        ..PathInputOptions::default()
+    };
+    let relative = resolve_path(path, "", Some(&options));
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
         return Err(CodingAgentError::UnsafePath(path.to_string()));
     }
 
