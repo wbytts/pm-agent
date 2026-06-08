@@ -266,6 +266,14 @@ fn glob_match_chars(value: &[char], pattern: &[char]) -> bool {
     if pattern.is_empty() {
         return value.is_empty();
     }
+    if pattern[0] == '[' {
+        if let Some(end) = pattern.iter().position(|ch| *ch == ']') {
+            if !value.is_empty() && glob_character_class_matches(value[0], &pattern[1..end]) {
+                return glob_match_chars(&value[1..], &pattern[end + 1..]);
+            }
+            return false;
+        }
+    }
     match pattern[0] {
         '*' => {
             glob_match_chars(value, &pattern[1..])
@@ -277,6 +285,34 @@ fn glob_match_chars(value: &[char], pattern: &[char]) -> bool {
                 && value[0] == character
                 && glob_match_chars(&value[1..], &pattern[1..])
         }
+    }
+}
+
+fn glob_character_class_matches(value: char, class: &[char]) -> bool {
+    if class.is_empty() {
+        return false;
+    }
+    let negated = class[0] == '!' || class[0] == '^';
+    let class = if negated { &class[1..] } else { class };
+    let mut matched = false;
+    let mut index = 0;
+    while index < class.len() {
+        if index + 2 < class.len() && class[index + 1] == '-' {
+            if class[index] <= value && value <= class[index + 2] {
+                matched = true;
+            }
+            index += 3;
+        } else {
+            if class[index] == value {
+                matched = true;
+            }
+            index += 1;
+        }
+    }
+    if negated {
+        !matched
+    } else {
+        matched
     }
 }
 
@@ -323,5 +359,32 @@ mod tests {
         assert!(enabled.contains(&base.join("nested").join("force.md")));
         assert!(!enabled.contains(&base.join("draft.md")));
         assert!(!enabled.contains(&base.join("keep.md")));
+    }
+
+    #[test]
+    fn matches_minimatch_globstar_and_character_classes_like_pi_filters() {
+        let base = PathBuf::from("/repo");
+        let paths = vec![
+            base.join("a.md"),
+            base.join("nested").join("b.md"),
+            base.join("nested").join("c.txt"),
+        ];
+
+        let globstar = apply_patterns(&paths, &["**/*.md".to_string()], &base);
+        assert!(globstar.contains(&base.join("a.md")));
+        assert!(globstar.contains(&base.join("nested").join("b.md")));
+        assert!(!globstar.contains(&base.join("nested").join("c.txt")));
+
+        let class = apply_patterns(&paths, &["nested/[bc].*".to_string()], &base);
+        assert!(class.contains(&base.join("nested").join("b.md")));
+        assert!(class.contains(&base.join("nested").join("c.txt")));
+
+        let range = apply_patterns(&paths, &["nested/[a-c].*".to_string()], &base);
+        assert!(range.contains(&base.join("nested").join("b.md")));
+        assert!(range.contains(&base.join("nested").join("c.txt")));
+
+        let negated = apply_patterns(&paths, &["nested/[!b].*".to_string()], &base);
+        assert!(!negated.contains(&base.join("nested").join("b.md")));
+        assert!(negated.contains(&base.join("nested").join("c.txt")));
     }
 }
