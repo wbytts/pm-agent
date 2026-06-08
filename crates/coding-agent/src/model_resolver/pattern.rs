@@ -239,10 +239,55 @@ fn glob_match_chars(value: &[char], pattern: &[char]) -> bool {
                 || (!value.is_empty() && glob_match_chars(&value[1..], pattern))
         }
         '?' => !value.is_empty() && glob_match_chars(&value[1..], &pattern[1..]),
+        '[' => match character_class_match(value, pattern) {
+            Some((matched, pattern_rest)) => matched && glob_match_chars(&value[1..], pattern_rest),
+            None => {
+                !value.is_empty() && value[0] == '[' && glob_match_chars(&value[1..], &pattern[1..])
+            }
+        },
         character => {
             !value.is_empty()
                 && value[0] == character
                 && glob_match_chars(&value[1..], &pattern[1..])
         }
     }
+}
+
+fn character_class_match<'a>(value: &[char], pattern: &'a [char]) -> Option<(bool, &'a [char])> {
+    let end = pattern.iter().position(|character| *character == ']')?;
+    if end <= 1 {
+        return None;
+    }
+    let character = *value.first()?;
+    let class = &pattern[1..end];
+    let (negated, class) = match class.first() {
+        Some('!' | '^') => (true, &class[1..]),
+        _ => (false, class),
+    };
+    if class.is_empty() {
+        return None;
+    }
+    let matched = character_class_contains(class, character);
+    let matched = if negated { !matched } else { matched };
+    Some((matched, &pattern[end + 1..]))
+}
+
+fn character_class_contains(class: &[char], character: char) -> bool {
+    let mut index = 0;
+    while index < class.len() {
+        if index + 2 < class.len() && class[index + 1] == '-' {
+            let start = class[index];
+            let end = class[index + 2];
+            if start <= character && character <= end {
+                return true;
+            }
+            index += 3;
+            continue;
+        }
+        if class[index] == character {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }

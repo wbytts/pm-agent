@@ -36,6 +36,27 @@ mod tests {
     }
 
     #[test]
+    fn resolves_glob_scope_with_minimatch_character_classes_like_pi() {
+        let scoped = resolve_model_scope(&["gpt-4[o]-*".to_string()], &models());
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].model.id, "gpt-4o-20241001");
+    }
+
+    #[test]
+    fn resolves_glob_scope_with_minimatch_character_ranges_like_pi() {
+        let scoped = resolve_model_scope(&["gpt-4[a-p]-*".to_string()], &models());
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].model.id, "gpt-4o-20241001");
+    }
+
+    #[test]
+    fn resolves_glob_scope_with_minimatch_negated_classes_like_pi() {
+        let scoped = resolve_model_scope(&["gpt-4[!x]-*".to_string()], &models());
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].model.id, "gpt-4o-20241001");
+    }
+
+    #[test]
     fn resolves_cli_provider_model_and_custom_fallback() {
         let registry = TestRegistry {
             models: models(),
