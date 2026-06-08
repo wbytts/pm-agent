@@ -1033,6 +1033,94 @@ mod tests {
     }
 
     #[test]
+    fn multi_file_extension_subdirectories_only_load_index_like_pi() {
+        let dir = temp_dir();
+        let extension_dir = dir.join("extensions").join("subagent");
+        let index = extension_dir.join("index.ts");
+        let helper = extension_dir.join("agents.ts");
+        let standalone = dir.join("extensions").join("standalone.ts");
+        write_file(&index);
+        write_file(&helper);
+        write_file(&standalone);
+
+        let resolved =
+            LocalPackageManager::resolve_extension_sources(&[display_path(&dir)], false, false);
+
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&index) && resource.enabled));
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&standalone) && resource.enabled));
+        assert!(!resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&helper)));
+    }
+
+    #[test]
+    fn extension_subdirectories_without_index_or_manifest_are_skipped_like_pi() {
+        let dir = temp_dir();
+        let helper = dir.join("extensions").join("broken").join("helper.ts");
+        let another = dir.join("extensions").join("broken").join("another.ts");
+        let valid = dir.join("extensions").join("valid.ts");
+        write_file(&helper);
+        write_file(&another);
+        write_file(&valid);
+
+        let resolved =
+            LocalPackageManager::resolve_extension_sources(&[display_path(&dir)], false, false);
+
+        assert_eq!(resolved.extensions.len(), 1);
+        assert_eq!(resolved.extensions[0].path, display_path(&valid));
+        assert!(resolved.extensions[0].enabled);
+    }
+
+    #[test]
+    fn package_manifest_entries_with_leading_tilde_stay_package_relative_like_pi() {
+        let dir = temp_dir();
+        let direct_extension = dir.join("~extensions").join("main.ts");
+        let slash_extension = dir.join("~").join("extensions").join("alt.ts");
+        let direct_skill = dir.join("~skills").join("direct-skill").join("SKILL.md");
+        let slash_skill = dir
+            .join("~")
+            .join("skills")
+            .join("slash-skill")
+            .join("SKILL.md");
+        write_file(&direct_extension);
+        write_file(&slash_extension);
+        write_file(&direct_skill);
+        write_file(&slash_skill);
+        fs::write(
+            dir.join("package.json"),
+            r#"{"pi":{"extensions":["~extensions/main.ts","~/extensions/alt.ts"],"skills":["~skills","~/skills"]}}"#,
+        )
+        .expect("package manifest should be written");
+
+        let resolved =
+            LocalPackageManager::resolve_extension_sources(&[display_path(&dir)], false, false);
+
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&direct_extension) && resource.enabled));
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&slash_extension) && resource.enabled));
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| resource.path == display_path(&direct_skill) && resource.enabled));
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| resource.path == display_path(&slash_skill) && resource.enabled));
+    }
+
+    #[test]
     fn project_sources_sort_before_user_sources() {
         let user = PathMetadata {
             source: "local".to_string(),
