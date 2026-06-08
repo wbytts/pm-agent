@@ -45,7 +45,7 @@ pub fn sanitize_binary_output(value: &str) -> String {
             if matches!(*ch, '\t' | '\n' | '\r') {
                 return true;
             }
-            if code <= 0x1f || code == 0x7f {
+            if code <= 0x1f {
                 return false;
             }
             if (0xfff9..=0xfffb).contains(&code) {
@@ -76,5 +76,10 @@ mod tests {
     #[test]
     fn sanitizes_control_characters_but_keeps_line_breaks() {
         assert_eq!(sanitize_binary_output("a\u{0000}\tb\nc\rd"), "a\tb\nc\rd");
+    }
+
+    #[test]
+    fn sanitize_binary_output_keeps_delete_character_like_pi() {
+        assert_eq!(sanitize_binary_output("a\u{007f}b"), "a\u{007f}b");
     }
 }
