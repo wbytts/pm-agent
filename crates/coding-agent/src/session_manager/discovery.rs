@@ -1,4 +1,5 @@
 use super::{default_session_dir, parse_millis, SessionInfo};
+use crate::utils::paths::resolve_path;
 use agent::harness::{JsonlSessionStorage, SessionStorage, SessionTreeEntry};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -172,12 +173,7 @@ fn looks_like_session_path(session_arg: &str) -> bool {
 }
 
 fn resolve_path_arg(session_arg: &str, cwd: &Path) -> PathBuf {
-    let path = PathBuf::from(session_arg);
-    if path.is_absolute() {
-        path
-    } else {
-        cwd.join(path)
-    }
+    resolve_path(session_arg, cwd, None)
 }
 
 fn default_sessions_root() -> PathBuf {
@@ -227,6 +223,23 @@ mod tests {
             resolved,
             ResolvedSession::Path {
                 path: "/tmp/project/sessions/demo.jsonl".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_path_arguments_with_dot_segments_like_pi() {
+        let resolved = resolve_session_path(
+            "sessions/../demo.jsonl",
+            Path::new("/tmp/project"),
+            None,
+            Some(Path::new("/tmp/no-sessions")),
+        );
+
+        assert_eq!(
+            resolved,
+            ResolvedSession::Path {
+                path: "/tmp/project/demo.jsonl".to_string()
             }
         );
     }
