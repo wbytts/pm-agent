@@ -7,9 +7,7 @@ use crate::providers::openai_completions_types::{
     OpenAiCompletionsProcessedEvent, OpenAiCompletionsStreamChunk, OpenAiCompletionsStreamDelta,
     OpenAiCompletionsStreamProcessResult, OpenAiCompletionsToolCallDelta, OpenAiCompletionsUsage,
 };
-use crate::types::{
-    AssistantStopReason, Message, MessageRole, Model, StreamEvent, StreamToolCall, Usage, UsageCost,
-};
+use crate::types::{AssistantStopReason, Model, StreamEvent, StreamToolCall, Usage, UsageCost};
 use crate::utils::parse_streaming_json;
 
 pub fn parse_openai_completions_stream_chunks_from_value(
@@ -304,11 +302,8 @@ pub fn openai_completions_stream_events_from_process_result(
     if content.is_empty() && !has_tool_calls {
         return Err("OpenAI Completions 输出文本缺失".to_string());
     }
-    events.push(StreamEvent::Finished {
-        message: Message {
-            role: MessageRole::Assistant,
-            content,
-        },
+    events.push(StreamEvent::RichFinished {
+        message: result.assistant,
     });
     Ok(events)
 }
@@ -714,7 +709,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last(),
-            Some(StreamEvent::Finished { message }) if message.content == "hello"
+            Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "hello"
         ));
     }
 

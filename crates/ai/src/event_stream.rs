@@ -138,6 +138,8 @@ mod tests {
                 role: MessageRole::Assistant,
                 content: String::new(),
                 content_blocks: Vec::new(),
+                response_model: None,
+                response_id: None,
                 usage: Usage::default(),
                 stop_reason: crate::AssistantStopReason::Error,
                 error_message: Some("failed".to_string()),

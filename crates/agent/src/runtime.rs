@@ -1,6 +1,6 @@
 use ai::{
-    AssistantContentBlock, LanguageModelProvider, Message as AiMessage, MessageRole, StreamEvent,
-    StreamRequest, TextContent, ThinkingContent, ToolCall,
+    AssistantContentBlock, LanguageModelProvider, Message as AiMessage, MessageRole,
+    RichAssistantMessage, StreamEvent, StreamRequest, TextContent, ThinkingContent, ToolCall,
 };
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -153,6 +153,28 @@ impl<P: LanguageModelProvider> Agent<P> {
                     self.state.messages.push(message.clone());
                     events.push(AgentEvent::MessageEnd { message });
                 }
+                StreamEvent::RichFinished { message } => {
+                    let content = rich_assistant_text(&message);
+                    if assistant_content_blocks.is_empty() {
+                        assistant_content_blocks = message.content.clone();
+                    }
+                    let message = AgentMessage {
+                        role: MessageRole::Assistant,
+                        content,
+                        content_blocks: assistant_content_blocks.clone(),
+                        user_content_blocks: Vec::new(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        details: None,
+                        is_error: false,
+                        usage: assistant_usage.clone().or_else(|| {
+                            (message.usage != Default::default()).then_some(message.usage)
+                        }),
+                        stop_reason: Some(message.stop_reason),
+                    };
+                    self.state.messages.push(message.clone());
+                    events.push(AgentEvent::MessageEnd { message });
+                }
                 StreamEvent::Error { message } => events.push(AgentEvent::Error { message }),
             }
         }
@@ -163,6 +185,18 @@ impl<P: LanguageModelProvider> Agent<P> {
         });
         Ok(events)
     }
+}
+
+fn rich_assistant_text(message: &RichAssistantMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn set_content_block(

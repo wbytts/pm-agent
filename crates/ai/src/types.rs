@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::conversation::{AssistantContentBlock, RichMessage};
+use crate::conversation::{AssistantContentBlock, RichAssistantMessage, RichMessage};
 use crate::utils::{AssistantMessageDiagnostic, DiagnosticTarget};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +68,10 @@ pub struct AssistantMessage {
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content_blocks: Vec<AssistantContentBlock>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
     pub usage: Usage,
     pub stop_reason: AssistantStopReason,
     #[serde(default)]
@@ -93,6 +97,8 @@ impl AssistantMessage {
             role: MessageRole::Assistant,
             content,
             content_blocks,
+            response_model: None,
+            response_id: None,
             usage,
             stop_reason: AssistantStopReason::Stop,
             error_message: None,
@@ -106,6 +112,8 @@ impl AssistantMessage {
             role: MessageRole::Assistant,
             content: String::new(),
             content_blocks: Vec::new(),
+            response_model: None,
+            response_id: None,
             usage: Usage::default(),
             stop_reason: AssistantStopReason::Error,
             error_message: Some(message),
@@ -363,6 +371,9 @@ pub enum StreamEvent {
     },
     Finished {
         message: Message,
+    },
+    RichFinished {
+        message: RichAssistantMessage,
     },
     Error {
         message: String,

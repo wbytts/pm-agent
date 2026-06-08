@@ -797,6 +797,30 @@ impl<P: LanguageModelProvider> AgentLoop<P> {
                         stop_reason: Some(stop_reason),
                     });
                 }
+                StreamEvent::RichFinished { message } => {
+                    let stop_reason = if saw_tool_call {
+                        ai::AssistantStopReason::ToolUse
+                    } else {
+                        message.stop_reason.clone()
+                    };
+                    if content_blocks.is_empty() {
+                        content_blocks = message.content.clone();
+                    }
+                    return Ok(AgentMessage {
+                        role: MessageRole::Assistant,
+                        content: rich_assistant_text(&message),
+                        content_blocks,
+                        user_content_blocks: Vec::new(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        details: None,
+                        is_error: false,
+                        usage: usage.or_else(|| {
+                            (message.usage != Default::default()).then_some(message.usage)
+                        }),
+                        stop_reason: Some(stop_reason),
+                    });
+                }
                 StreamEvent::Error { message } => {
                     return Ok(AgentMessage {
                         role: MessageRole::Assistant,
@@ -1272,6 +1296,18 @@ fn rich_assistant_content(message: &AgentMessage) -> Vec<AssistantContentBlock> 
         text: message.content.clone(),
         text_signature: None,
     })]
+}
+
+fn rich_assistant_text(message: &RichAssistantMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn set_content_block(

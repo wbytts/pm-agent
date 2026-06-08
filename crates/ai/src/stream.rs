@@ -130,6 +130,8 @@ pub fn provider_events_to_stream(
                         } else {
                             content_blocks.clone()
                         },
+                        response_model: None,
+                        response_id: None,
                         usage: usage.clone(),
                         stop_reason: if saw_tool_call {
                             AssistantStopReason::ToolUse
@@ -138,6 +140,44 @@ pub fn provider_events_to_stream(
                         },
                         error_message: None,
                         diagnostics: Vec::new(),
+                    },
+                });
+            }
+            StreamEvent::RichFinished { message } => {
+                saw_final = true;
+                let message_content = rich_assistant_text(&message);
+                if content.is_empty() {
+                    content = message_content.clone();
+                }
+                let final_usage = if usage == Usage::default() {
+                    message.usage.clone()
+                } else {
+                    usage.clone()
+                };
+                let final_content_blocks = if content_blocks.is_empty() {
+                    message.content.clone()
+                } else {
+                    content_blocks.clone()
+                };
+                stream.push(AssistantMessageEvent::Done {
+                    message: AssistantMessage {
+                        role: MessageRole::Assistant,
+                        content: if message_content.is_empty() {
+                            content.clone()
+                        } else {
+                            message_content
+                        },
+                        content_blocks: final_content_blocks,
+                        response_model: message.response_model,
+                        response_id: message.response_id,
+                        usage: final_usage,
+                        stop_reason: if saw_tool_call {
+                            AssistantStopReason::ToolUse
+                        } else {
+                            message.stop_reason
+                        },
+                        error_message: message.error_message,
+                        diagnostics: message.diagnostics,
                     },
                 });
             }
@@ -161,6 +201,8 @@ pub fn provider_events_to_stream(
                 role: MessageRole::Assistant,
                 content,
                 content_blocks,
+                response_model: None,
+                response_id: None,
                 usage,
                 stop_reason,
                 error_message: None,
@@ -170,6 +212,18 @@ pub fn provider_events_to_stream(
     }
 
     Ok(stream)
+}
+
+pub(crate) fn rich_assistant_text(message: &crate::RichAssistantMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn append_text_content_block(content_blocks: &mut Vec<AssistantContentBlock>, text: &str) {
@@ -243,9 +297,10 @@ pub fn simple_request(model: crate::Model, prompt: impl Into<String>) -> StreamR
 mod tests {
     use super::*;
     use crate::types::StreamToolCall;
+    use crate::utils::create_message_diagnostic;
     use crate::AssistantContentBlock;
     use crate::{providers::EchoProvider, ProviderRegistry};
-    use crate::{Model, RegisteredProvider};
+    use crate::{Model, RegisteredProvider, RichAssistantMessage};
 
     fn echo_model() -> Model {
         Model {
@@ -412,5 +467,46 @@ mod tests {
             &message.content_blocks[1],
             AssistantContentBlock::Text(text) if text.text == "answer"
         ));
+    }
+
+    #[test]
+    fn final_message_preserves_provider_response_metadata_like_pi() {
+        let stream = provider_events_to_stream(vec![StreamEvent::RichFinished {
+            message: RichAssistantMessage {
+                provider: "openai".to_string(),
+                api: "openai-completions".to_string(),
+                model: "openrouter/auto".to_string(),
+                content: vec![AssistantContentBlock::Text(TextContent {
+                    text: "answer".to_string(),
+                    text_signature: None,
+                })],
+                response_model: Some("anthropic/claude-sonnet-4-5".to_string()),
+                response_id: Some("chatcmpl_123".to_string()),
+                usage: Usage {
+                    input: 1,
+                    output: 2,
+                    total_tokens: 3,
+                    ..Usage::default()
+                },
+                stop_reason: AssistantStopReason::Stop,
+                error_message: None,
+                diagnostics: vec![create_message_diagnostic(
+                    "warning",
+                    "upstream warning",
+                    None,
+                )],
+                timestamp_millis: 123,
+            },
+        }])
+        .expect("stream");
+
+        let message = stream.result().expect("final result");
+        assert_eq!(
+            message.response_model.as_deref(),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+        assert_eq!(message.response_id.as_deref(), Some("chatcmpl_123"));
+        assert_eq!(message.diagnostics.len(), 1);
+        assert_eq!(message.usage.total_tokens, 3);
     }
 }

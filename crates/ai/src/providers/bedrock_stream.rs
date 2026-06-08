@@ -9,9 +9,7 @@ use crate::providers::bedrock_types::{
     BedrockContentBlockDelta, BedrockContentBlockStart, BedrockConversationRole,
     BedrockProcessedEvent, BedrockStreamEvent, BedrockStreamProcessResult, BedrockUsage,
 };
-use crate::types::{
-    AssistantStopReason, Message, MessageRole, StreamEvent, StreamToolCall, Usage, UsageCost,
-};
+use crate::types::{AssistantStopReason, StreamEvent, StreamToolCall, Usage, UsageCost};
 use crate::utils::parse_streaming_json;
 
 pub fn map_bedrock_stop_reason(reason: Option<&str>) -> AssistantStopReason {
@@ -280,23 +278,8 @@ pub fn bedrock_stream_events_from_process_result(
         }
     }
 
-    if text_content.is_empty() {
-        text_content = result
-            .assistant
-            .content
-            .iter()
-            .filter_map(|block| match block {
-                AssistantContentBlock::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("");
-    }
-    events.push(StreamEvent::Finished {
-        message: Message {
-            role: MessageRole::Assistant,
-            content: text_content,
-        },
+    events.push(StreamEvent::RichFinished {
+        message: result.assistant,
     });
     events
 }

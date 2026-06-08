@@ -7,9 +7,8 @@ use crate::conversation::{
 };
 use crate::providers::{is_cloudflare_provider, resolve_cloudflare_base_url_from_str};
 use crate::types::{
-    validate_model, AiError, AiResult, AssistantStopReason, LanguageModelProvider, Message,
-    MessageRole, Model, ModelThinkingLevel, StreamEvent, StreamRequest, StreamToolCall,
-    ToolDefinition,
+    validate_model, AiError, AiResult, AssistantStopReason, LanguageModelProvider, MessageRole,
+    Model, ModelThinkingLevel, StreamEvent, StreamRequest, StreamToolCall, ToolDefinition,
 };
 use crate::utils::{parse_json_with_repair, parse_streaming_json, sanitize_surrogates};
 use serde_json::{json, Value};
@@ -764,11 +763,8 @@ fn anthropic_stream_events_from_process_result(
     if content.is_empty() && !has_tool_calls {
         return Err("content text 缺失".to_string());
     }
-    events.push(StreamEvent::Finished {
-        message: Message {
-            role: MessageRole::Assistant,
-            content,
-        },
+    events.push(StreamEvent::RichFinished {
+        message: result.assistant,
     });
     Ok(events)
 }
@@ -1386,7 +1382,7 @@ mod tests {
         AssistantContentBlock, ImageContent, RichMessage, TextContent, ThinkingContent,
         UserContentBlock, UserMessage, UserMessageContent,
     };
-    use crate::types::{Model, ModelInputKind, ModelReasoning, ModelThinkingLevel, Usage};
+    use crate::types::{Message, Model, ModelInputKind, ModelReasoning, ModelThinkingLevel, Usage};
     use std::collections::BTreeMap;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1706,7 +1702,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last().expect("finished"),
-            StreamEvent::Finished { message } if message.content == "hello"
+            StreamEvent::RichFinished { message } if crate::stream::rich_assistant_text(message) == "hello"
         ));
     }
 
@@ -1761,7 +1757,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last().expect("finished"),
-            StreamEvent::Finished { message } if message.content.is_empty()
+            StreamEvent::RichFinished { message } if crate::stream::rich_assistant_text(message).is_empty()
         ));
     }
 
@@ -1817,7 +1813,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last().expect("finished"),
-            StreamEvent::Finished { message } if message.content == "answer"
+            StreamEvent::RichFinished { message } if crate::stream::rich_assistant_text(message) == "answer"
         ));
     }
 

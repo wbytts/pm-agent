@@ -7,9 +7,7 @@ use crate::conversation::{
     transform_messages, AssistantContentBlock, RichAssistantMessage, RichMessage, TextContent,
     ThinkingContent, ToolCall, UserContentBlock, UserMessageContent,
 };
-use crate::types::{
-    AssistantStopReason, Message, MessageRole, StreamEvent, StreamToolCall, Usage, UsageCost,
-};
+use crate::types::{AssistantStopReason, StreamEvent, StreamToolCall, Usage, UsageCost};
 use crate::types::{Model, ModelInputKind};
 use crate::utils::{sanitize_surrogates, short_hash};
 
@@ -410,11 +408,8 @@ pub fn openai_responses_stream_events_from_process_result(
     if content.is_empty() && !has_tool_calls {
         return Err("Responses API 输出文本缺失".to_string());
     }
-    events.push(StreamEvent::Finished {
-        message: Message {
-            role: MessageRole::Assistant,
-            content,
-        },
+    events.push(StreamEvent::RichFinished {
+        message: result.assistant,
     });
     Ok(events)
 }
@@ -1754,7 +1749,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last().expect("finished"),
-            crate::StreamEvent::Finished { message } if message.content == "answer"
+            crate::StreamEvent::RichFinished { message } if crate::stream::rich_assistant_text(message) == "answer"
         ));
     }
 
@@ -1832,7 +1827,7 @@ mod tests {
         ));
         assert!(matches!(
             events.last().expect("finished"),
-            crate::StreamEvent::Finished { message } if message.content.is_empty()
+            crate::StreamEvent::RichFinished { message } if crate::stream::rich_assistant_text(message).is_empty()
         ));
     }
 
