@@ -196,7 +196,7 @@ pub(super) fn installed_npm_version(path: &Path) -> Option<String> {
 }
 
 fn local_git_head(path: &Path) -> Option<String> {
-    let git_dir = path.join(".git");
+    let git_dir = git_dir_path(path)?;
     let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
     let trimmed = head.trim();
     if let Some(reference) = trimmed.strip_prefix("ref: ") {
@@ -205,6 +205,21 @@ fn local_git_head(path: &Path) -> Option<String> {
             .or_else(|| packed_ref_head(&git_dir, reference));
     }
     Some(trimmed.to_string())
+}
+
+fn git_dir_path(path: &Path) -> Option<PathBuf> {
+    let dot_git = path.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let content = fs::read_to_string(&dot_git).ok()?;
+    let gitdir = content.trim().strip_prefix("gitdir:")?.trim();
+    let gitdir_path = PathBuf::from(gitdir);
+    Some(if gitdir_path.is_absolute() {
+        gitdir_path
+    } else {
+        path.join(gitdir_path)
+    })
 }
 
 fn packed_ref_head(git_dir: &Path, reference: &str) -> Option<String> {
@@ -438,6 +453,43 @@ mod tests {
             git_path.to_string_lossy().to_string(),
             "2222222222222222222222222222222222222222".to_string(),
         );
+
+        let updates = check_configured_updates(
+            &checker,
+            &root,
+            "/work",
+            &[ConfiguredUpdateSource {
+                source: "git:https://github.com/user/repo".to_string(),
+                scope: SourceScope::User,
+            }],
+        );
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].kind, PackageKind::Git);
+    }
+
+    #[test]
+    fn detects_git_update_when_git_metadata_is_file_like_pi_rev_parse() {
+        let root = temp_dir();
+        let git_path = root
+            .join("git")
+            .join("github.com")
+            .join("user")
+            .join("repo");
+        let metadata_dir = root.join("metadata").join("repo.git");
+        fs::create_dir_all(&git_path).expect("git path should exist");
+        fs::create_dir_all(&metadata_dir).expect("metadata dir should exist");
+        fs::write(
+            git_path.join(".git"),
+            format!("gitdir: {}\n", metadata_dir.to_string_lossy()),
+        )
+        .expect("git file should be written");
+        fs::write(metadata_dir.join("HEAD"), "local").expect("head should be written");
+
+        let mut checker = FakeChecker::default();
+        checker
+            .git
+            .insert(git_path.to_string_lossy().to_string(), "remote".to_string());
 
         let updates = check_configured_updates(
             &checker,
