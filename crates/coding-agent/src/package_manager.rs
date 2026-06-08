@@ -1945,6 +1945,133 @@ mod tests {
     }
 
     #[test]
+    fn package_filters_layer_on_manifest_filters_like_pi() {
+        let dir = temp_dir();
+        write_file(&dir.join("extensions").join("foo.ts"));
+        write_file(&dir.join("extensions").join("bar.ts"));
+        write_file(&dir.join("extensions").join("baz.ts"));
+        fs::write(
+            dir.join("package.json"),
+            r#"{"pi":{"extensions":["extensions","!**/baz.ts"]}}"#,
+        )
+        .expect("manifest should be written");
+        let filter = PackageFilter {
+            extensions: Some(vec!["!**/bar.ts".to_string()]),
+            ..PackageFilter::default()
+        };
+
+        let resolved = resolve_source(
+            &display_path(&dir),
+            SourceScope::User,
+            SourceOrigin::Package,
+            Some(&filter),
+        );
+        let mut extensions = resolved
+            .extensions
+            .iter()
+            .map(|resource| {
+                (
+                    Path::new(&resource.path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    resource.enabled,
+                )
+            })
+            .collect::<Vec<_>>();
+        extensions.sort();
+
+        assert_eq!(
+            extensions,
+            vec![("bar.ts".to_string(), false), ("foo.ts".to_string(), true),]
+        );
+    }
+
+    #[test]
+    fn package_filter_direct_paths_disable_unlisted_package_resources_like_pi() {
+        let dir = temp_dir();
+        write_file(&dir.join("extensions").join("one.ts"));
+        write_file(&dir.join("extensions").join("two.ts"));
+        let filter = PackageFilter {
+            extensions: Some(vec!["extensions/one.ts".to_string()]),
+            ..PackageFilter::default()
+        };
+
+        let resolved = resolve_source(
+            &display_path(&dir),
+            SourceScope::User,
+            SourceOrigin::Package,
+            Some(&filter),
+        );
+        let mut extensions = resolved
+            .extensions
+            .iter()
+            .map(|resource| {
+                (
+                    Path::new(&resource.path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    resource.enabled,
+                )
+            })
+            .collect::<Vec<_>>();
+        extensions.sort();
+
+        assert_eq!(
+            extensions,
+            vec![("one.ts".to_string(), true), ("two.ts".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn package_filter_force_exclude_overrides_force_include_like_pi() {
+        let dir = temp_dir();
+        write_file(&dir.join("extensions").join("alpha.ts"));
+        write_file(&dir.join("extensions").join("beta.ts"));
+        let filter = PackageFilter {
+            extensions: Some(vec![
+                "extensions/*.ts".to_string(),
+                "+extensions/alpha.ts".to_string(),
+                "-extensions/alpha.ts".to_string(),
+            ]),
+            ..PackageFilter::default()
+        };
+
+        let resolved = resolve_source(
+            &display_path(&dir),
+            SourceScope::User,
+            SourceOrigin::Package,
+            Some(&filter),
+        );
+        let mut extensions = resolved
+            .extensions
+            .iter()
+            .map(|resource| {
+                (
+                    Path::new(&resource.path)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    resource.enabled,
+                )
+            })
+            .collect::<Vec<_>>();
+        extensions.sort();
+
+        assert_eq!(
+            extensions,
+            vec![
+                ("alpha.ts".to_string(), false),
+                ("beta.ts".to_string(), true)
+            ]
+        );
+    }
+
+    #[test]
     fn manifest_package_filters_keep_disabled_resources_visible_like_pi() {
         let dir = temp_dir();
         fs::write(
