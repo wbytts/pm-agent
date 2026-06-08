@@ -219,6 +219,7 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
     let mut generated_tool_call_counter = 0usize;
     let mut response_id = None;
     let mut stop_reason = AssistantStopReason::Stop;
+    let mut saw_tool_call = false;
 
     for chunk in chunks {
         if response_id.is_none() {
@@ -292,6 +293,7 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
                         content_index,
                         tool_call,
                     });
+                    saw_tool_call = true;
                     stop_reason = AssistantStopReason::ToolUse;
                 }
             }
@@ -314,7 +316,7 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
     }
     finish_google_thinking_block(&mut events, &mut current_thinking);
 
-    if content.is_empty() {
+    if content.is_empty() && !saw_tool_call {
         return Err("Google Generative AI 输出文本缺失".to_string());
     }
     events.push(StreamEvent::RichFinished {
@@ -658,5 +660,18 @@ mod tests {
             events.last(),
             Some(StreamEvent::RichFinished { message }) if crate::stream::rich_assistant_text(message) == "checking"
         ));
+    }
+
+    #[test]
+    fn google_stream_allows_tool_call_only_output_like_pi() {
+        let sse = "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"role\":\"model\",\"parts\":[\
+                   {\"functionCall\":{\"id\":\"call_1\",\"name\":\"read\",\"args\":{\"path\":\"README.md\"}}}]}}]}\n\n";
+
+        let events = google_sse_text_to_stream_events(sse).expect("sse should parse");
+        let stream = crate::provider_events_to_stream(events).expect("stream");
+        let message = stream.result().expect("final message");
+
+        assert_eq!(message.stop_reason, AssistantStopReason::ToolUse);
+        assert_eq!(message.content, "");
     }
 }
