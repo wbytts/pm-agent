@@ -162,7 +162,7 @@ fn matches_any_pattern(path: &Path, patterns: &[String], base_dir: &Path) -> boo
     let skill_parent = skill_parent_match_values(path, base_dir);
 
     patterns.iter().any(|pattern| {
-        let normalized = normalize_slashes(pattern);
+        let normalized = normalize_pattern(pattern);
         glob_match(&rel, &normalized)
             || glob_match(&name, &normalized)
             || glob_match(&full, &normalized)
@@ -214,6 +214,10 @@ fn is_pattern(value: &str) -> bool {
 }
 
 fn normalize_exact_pattern(pattern: &str) -> String {
+    normalize_pattern(pattern)
+}
+
+fn normalize_pattern(pattern: &str) -> String {
     let pattern = pattern
         .strip_prefix("./")
         .or_else(|| pattern.strip_prefix(".\\"))

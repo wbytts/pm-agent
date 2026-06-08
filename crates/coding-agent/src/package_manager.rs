@@ -1121,6 +1121,74 @@ mod tests {
     }
 
     #[test]
+    fn package_manifest_expands_positive_skill_globs_before_collecting_like_pi() {
+        let dir = temp_dir();
+        let pdf_skill = dir
+            .join("plugins")
+            .join("pdf-to-markdown")
+            .join("skills")
+            .join("pdf-to-markdown")
+            .join("SKILL.md");
+        let dws_skill = dir
+            .join("plugins")
+            .join("nutrient-dws")
+            .join("skills")
+            .join("document-processor-api")
+            .join("SKILL.md");
+        write_file(&pdf_skill);
+        write_file(&dws_skill);
+        fs::write(
+            dir.join("package.json"),
+            r#"{"pi":{"skills":["./plugins/*/skills"]}}"#,
+        )
+        .expect("package manifest should be written");
+
+        let resolved =
+            LocalPackageManager::resolve_extension_sources(&[display_path(&dir)], false, false);
+
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| resource.path == display_path(&pdf_skill) && resource.enabled));
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| resource.path == display_path(&dws_skill) && resource.enabled));
+    }
+
+    #[test]
+    fn package_manifest_force_include_overrides_exclusion_like_pi() {
+        let dir = temp_dir();
+        let one = dir.join("extensions").join("one.ts");
+        let two = dir.join("extensions").join("two.ts");
+        let three = dir.join("extensions").join("three.ts");
+        write_file(&one);
+        write_file(&two);
+        write_file(&three);
+        fs::write(
+            dir.join("package.json"),
+            r#"{"pi":{"extensions":["extensions","!**/two.ts","+extensions/two.ts"]}}"#,
+        )
+        .expect("package manifest should be written");
+
+        let resolved =
+            LocalPackageManager::resolve_extension_sources(&[display_path(&dir)], false, false);
+
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&one) && resource.enabled));
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&two) && resource.enabled));
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == display_path(&three) && resource.enabled));
+    }
+
+    #[test]
     fn project_sources_sort_before_user_sources() {
         let user = PathMetadata {
             source: "local".to_string(),
