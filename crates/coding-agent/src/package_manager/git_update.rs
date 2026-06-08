@@ -3,7 +3,7 @@ use super::source::git_install_path;
 use super::types::{NpmCommandConfig, PackageCommandStep, SourceScope};
 use crate::utils::git::GitSource;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitUpdateTarget {
@@ -102,8 +102,9 @@ pub fn git_update_target(target_dir: &Path, source: &GitSource) -> GitUpdateTarg
 }
 
 fn upstream_branch(target_dir: &Path) -> Option<String> {
+    let git_dir = git_dir_path(target_dir)?;
     let head_ref = head_branch_ref(target_dir)?;
-    let config = fs::read_to_string(target_dir.join(".git").join("config")).ok()?;
+    let config = fs::read_to_string(git_dir.join("config")).ok()?;
     let branch = head_ref.strip_prefix("refs/heads/")?;
     let section = format!(r#"[branch "{branch}"]"#);
     let block = config_section(&config, &section)?;
@@ -117,9 +118,9 @@ fn upstream_branch(target_dir: &Path) -> Option<String> {
 }
 
 fn origin_head_branch(target_dir: &Path) -> Option<String> {
+    let git_dir = git_dir_path(target_dir)?;
     let value = fs::read_to_string(
-        target_dir
-            .join(".git")
+        git_dir
             .join("refs")
             .join("remotes")
             .join("origin")
@@ -134,11 +135,26 @@ fn origin_head_branch(target_dir: &Path) -> Option<String> {
 }
 
 fn head_branch_ref(target_dir: &Path) -> Option<String> {
-    fs::read_to_string(target_dir.join(".git").join("HEAD"))
+    fs::read_to_string(git_dir_path(target_dir)?.join("HEAD"))
         .ok()?
         .trim()
         .strip_prefix("ref: ")
         .map(ToString::to_string)
+}
+
+fn git_dir_path(target_dir: &Path) -> Option<PathBuf> {
+    let dot_git = target_dir.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let content = fs::read_to_string(&dot_git).ok()?;
+    let gitdir = content.trim().strip_prefix("gitdir:")?.trim();
+    let gitdir_path = PathBuf::from(gitdir);
+    Some(if gitdir_path.is_absolute() {
+        gitdir_path
+    } else {
+        target_dir.join(gitdir_path)
+    })
 }
 
 fn config_section(config: &str, section: &str) -> Option<String> {
@@ -239,6 +255,39 @@ mod tests {
     }
 
     #[test]
+    fn unpinned_git_update_uses_upstream_refspec_when_git_metadata_is_file_like_pi() {
+        let dir = temp_dir();
+        let metadata_dir = dir.join("metadata").join("repo.git");
+        fs::create_dir_all(&metadata_dir).expect("metadata dir");
+        fs::write(
+            dir.join(".git"),
+            format!("gitdir: {}\n", metadata_dir.to_string_lossy()),
+        )
+        .expect("git file write");
+        fs::write(metadata_dir.join("HEAD"), "ref: refs/heads/dev\n").expect("head write");
+        fs::write(
+            metadata_dir.join("config"),
+            "[branch \"dev\"]\n\tremote = origin\n\tmerge = refs/heads/dev\n",
+        )
+        .expect("config write");
+        let source = git_source("git:https://github.com/user/repo");
+
+        let target = git_update_target(&dir, &source);
+
+        assert_eq!(target.reset_ref, "@{upstream}^{commit}");
+        assert_eq!(
+            target.fetch_args,
+            vec![
+                "fetch",
+                "--prune",
+                "--no-tags",
+                "origin",
+                "+refs/heads/dev:refs/remotes/origin/dev"
+            ]
+        );
+    }
+
+    #[test]
     fn unpinned_git_update_falls_back_to_origin_head_branch() {
         let dir = temp_git_dir();
         let origin = dir.join(".git").join("refs").join("remotes").join("origin");
@@ -289,16 +338,20 @@ mod tests {
     }
 
     fn temp_git_dir() -> PathBuf {
+        let dir = temp_dir();
+        fs::create_dir_all(dir.join(".git")).expect("git dir");
+        dir
+    }
+
+    fn temp_dir() -> PathBuf {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should be valid")
             .as_nanos();
         let sequence = TEMP_GIT_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
+        std::env::temp_dir().join(format!(
             "pm-agent-git-update-test-{}-{timestamp}-{sequence}",
             std::process::id()
-        ));
-        fs::create_dir_all(dir.join(".git")).expect("git dir");
-        dir
+        ))
     }
 }
