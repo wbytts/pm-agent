@@ -134,9 +134,10 @@ pub use utils::{
     create_assistant_message_diagnostic, create_error_diagnostic, create_message_diagnostic,
     diagnostic_error_from_message, extract_diagnostic_error, format_thrown_value,
     headers_to_record, is_context_overflow, parse_json_with_repair, parse_streaming_json,
-    repair_json, sanitize_surrogates, short_hash, string_enum, validate_json_schema_value,
-    validate_tool_arguments, validate_tool_call, AssistantMessageDiagnostic, AssistantMessageLike,
-    DiagnosticErrorInfo, DiagnosticTarget, JsonSchemaObject, StringEnumOptions, ValidationError,
+    repair_json, resolve_http_proxy_url_for_target, sanitize_surrogates, short_hash, string_enum,
+    validate_json_schema_value, validate_tool_arguments, validate_tool_call,
+    AssistantMessageDiagnostic, AssistantMessageLike, DiagnosticErrorInfo, DiagnosticTarget,
+    JsonSchemaObject, StringEnumOptions, ValidationError, UNSUPPORTED_PROXY_PROTOCOL_MESSAGE,
 };
 
 #[cfg(test)]
@@ -170,5 +171,12 @@ mod crate_root_export_tests {
         let _url: fn(Option<&str>, &str, &str, &str) -> String =
             crate::build_google_vertex_adc_stream_url;
         let _token: fn(Option<&str>) -> Option<String> = crate::resolve_google_vertex_access_token;
+    }
+
+    #[test]
+    fn crate_root_exports_node_http_proxy_helpers_for_pi_utils_parity() {
+        let _resolver: fn(&str) -> Result<Option<String>, String> =
+            crate::resolve_http_proxy_url_for_target;
+        assert!(crate::UNSUPPORTED_PROXY_PROTOCOL_MESSAGE.contains("Unsupported proxy protocol"));
     }
 }

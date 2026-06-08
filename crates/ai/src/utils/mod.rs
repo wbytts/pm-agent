@@ -2,6 +2,7 @@ pub mod diagnostics;
 pub mod hash;
 pub mod headers;
 pub mod json_parse;
+pub mod node_http_proxy;
 pub mod oauth;
 pub mod overflow;
 pub mod sanitize_unicode;
@@ -17,6 +18,7 @@ pub use diagnostics::{
 pub use hash::short_hash;
 pub use headers::headers_to_record;
 pub use json_parse::{parse_json_with_repair, parse_streaming_json, repair_json};
+pub use node_http_proxy::{resolve_http_proxy_url_for_target, UNSUPPORTED_PROXY_PROTOCOL_MESSAGE};
 pub use oauth::{
     anthropic_callback_response, anthropic_oauth_provider, base64_url_encode,
     create_anthropic_authorization_url, create_openai_codex_authorization_url,
