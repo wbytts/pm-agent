@@ -18,6 +18,7 @@ pub mod openai_prompt_cache;
 pub mod openai_responses;
 pub mod openai_responses_shared;
 pub mod openrouter_images;
+pub mod register_builtins;
 pub mod simple_options;
 
 pub use anthropic::{
@@ -135,6 +136,7 @@ pub use openai_responses_shared::{
     OpenAiResponsesUsage, ParsedOpenAiResponsesTextSignature,
 };
 pub use openrouter_images::{OpenRouterImagesConfig, OpenRouterImagesProvider};
+pub use register_builtins::{lazy_load_error_rich_message, node_only_provider_specifier};
 pub use simple_options::{
     adjust_max_tokens_for_thinking, build_base_options, clamp_reasoning, SimpleStreamOptions,
     StreamOptions, ThinkingBudgets, ThinkingTokenBudget,

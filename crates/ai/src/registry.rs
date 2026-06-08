@@ -281,6 +281,29 @@ mod tests {
     }
 
     #[test]
+    fn builtins_register_pi_builtin_api_providers() {
+        let providers = ProviderRegistry::builtins()
+            .list()
+            .into_iter()
+            .map(|provider| provider.api)
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "anthropic-messages",
+            "openai-completions",
+            "mistral-chat-completions",
+            "openai-responses",
+            "azure-openai-responses",
+            "openai-codex-responses",
+            "google-generative-ai",
+            "google-vertex",
+            "bedrock-converse-stream",
+        ] {
+            assert!(providers.iter().any(|api| api == expected));
+        }
+    }
+
+    #[test]
     fn registry_rejects_unknown_api() {
         let providers = ProviderRegistry::builtins();
         let error = providers
