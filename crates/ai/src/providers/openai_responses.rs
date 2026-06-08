@@ -147,11 +147,7 @@ impl LanguageModelProvider for AzureOpenAiResponsesProvider {
             url,
             Some(api_key),
             &request.model.headers,
-            OpenAiResponsesPayload {
-                model: deployment_name,
-                store: None,
-                ..build_responses_payload(&request, None)
-            },
+            build_azure_responses_payload(&request, &deployment_name),
         )
     }
 }
@@ -371,6 +367,19 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
     }
 }
 
+fn build_azure_responses_payload(
+    request: &StreamRequest,
+    deployment_name: &str,
+) -> OpenAiResponsesPayload {
+    OpenAiResponsesPayload {
+        model: deployment_name.to_string(),
+        store: None,
+        prompt_cache_key: azure_responses_prompt_cache_key(request),
+        prompt_cache_retention: None,
+        ..build_responses_payload(request, None)
+    }
+}
+
 fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
     if !request
         .model
@@ -469,6 +478,11 @@ fn responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
     if responses_cache_retention(request) == Some("none") {
         return None;
     }
+    let session_id = request.metadata.get("sessionId").and_then(Value::as_str);
+    clamp_openai_prompt_cache_key(session_id)
+}
+
+fn azure_responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
     let session_id = request.metadata.get("sessionId").and_then(Value::as_str);
     clamp_openai_prompt_cache_key(session_id)
 }
@@ -1045,6 +1059,68 @@ mod tests {
             .expect("payload json");
 
         assert_eq!(value["prompt_cache_retention"], "24h");
+    }
+
+    #[test]
+    fn builds_azure_responses_payload_cache_fields_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "azure-openai-responses".to_string(),
+            api: "azure-openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([
+                ("sessionId".to_string(), json!("azure-session")),
+                ("cacheRetention".to_string(), json!("long")),
+            ]),
+        };
+
+        let value = serde_json::to_value(build_azure_responses_payload(&request, "deploy-gpt-5"))
+            .expect("payload json");
+
+        assert_eq!(value["model"], "deploy-gpt-5");
+        assert_eq!(value["prompt_cache_key"], "azure-session");
+        assert!(value.get("prompt_cache_retention").is_none());
+    }
+
+    #[test]
+    fn keeps_azure_responses_prompt_cache_key_when_cache_retention_none_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "azure-openai-responses".to_string(),
+            api: "azure-openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([
+                ("sessionId".to_string(), json!("azure-session")),
+                ("cacheRetention".to_string(), json!("none")),
+            ]),
+        };
+
+        let value = serde_json::to_value(build_azure_responses_payload(&request, "deploy-gpt-5"))
+            .expect("payload json");
+
+        assert_eq!(value["prompt_cache_key"], "azure-session");
     }
 
     #[test]
