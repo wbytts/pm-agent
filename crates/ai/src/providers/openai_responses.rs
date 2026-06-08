@@ -120,7 +120,7 @@ impl AzureOpenAiResponsesProvider {
                         .to_string(),
                 )
             })?;
-        Ok(normalize_azure_base_url(&raw))
+        normalize_azure_base_url(&raw)
     }
 }
 
@@ -600,13 +600,17 @@ fn codex_responses_url(base_url: &str) -> String {
     }
 }
 
-fn normalize_azure_base_url(base_url: &str) -> String {
+fn normalize_azure_base_url(base_url: &str) -> AiResult<String> {
     let trimmed = base_url.trim().trim_end_matches('/');
     let Ok(mut url) = reqwest::Url::parse(trimmed) else {
-        return trimmed.to_string();
+        return Err(AiError::InvalidResponse(
+            "Invalid Azure OpenAI base URL".to_string(),
+        ));
     };
     let Some(host) = url.host_str() else {
-        return trimmed.to_string();
+        return Err(AiError::InvalidResponse(
+            "Invalid Azure OpenAI base URL".to_string(),
+        ));
     };
     let is_azure_host =
         host.ends_with(".openai.azure.com") || host.ends_with(".cognitiveservices.azure.com");
@@ -615,9 +619,9 @@ fn normalize_azure_base_url(base_url: &str) -> String {
     if is_azure_host && (path.is_empty() || path == "/" || path == "/openai") {
         url.set_path("/openai/v1");
         url.set_query(None);
-        return url.to_string().trim_end_matches('/').to_string();
+        return Ok(url.to_string().trim_end_matches('/').to_string());
     }
-    trimmed.to_string()
+    Ok(trimmed.to_string())
 }
 
 fn parse_deployment_name_map(value: Option<&str>) -> BTreeMap<String, String> {
@@ -682,19 +686,59 @@ mod tests {
     #[test]
     fn normalizes_azure_base_urls_like_pi() {
         assert_eq!(
-            normalize_azure_base_url("https://my-resource.cognitiveservices.azure.com"),
+            normalize_azure_base_url("https://my-resource.cognitiveservices.azure.com")
+                .expect("base url"),
             "https://my-resource.cognitiveservices.azure.com/openai/v1"
         );
         assert_eq!(
             normalize_azure_base_url(
                 "https://my-resource.openai.azure.com/openai?api-version=2024-12-01"
-            ),
+            )
+            .expect("base url"),
             "https://my-resource.openai.azure.com/openai/v1"
         );
         assert_eq!(
-            normalize_azure_base_url("https://my-proxy.example.com/v1?custom=true"),
+            normalize_azure_base_url("https://my-proxy.example.com/v1?custom=true")
+                .expect("base url"),
             "https://my-proxy.example.com/v1?custom=true"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_azure_base_url_before_network_like_pi() {
+        let provider = AzureOpenAiResponsesProvider::new(AzureOpenAiResponsesConfig {
+            api_key: Some("test-api-key".to_string()),
+            base_url: Some("not-a-url".to_string()),
+            resource_name: None,
+            api_version: "v1".to_string(),
+            deployment_name_map: BTreeMap::new(),
+        });
+        let model = Model {
+            id: "gpt-4o-mini".to_string(),
+            provider: "azure-openai-responses".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-4o mini".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+
+        let error = provider
+            .stream(StreamRequest {
+                model,
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "hello".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: Default::default(),
+            })
+            .expect_err("invalid Azure base URL should fail before HTTP");
+
+        assert!(matches!(
+            error,
+            AiError::InvalidResponse(message) if message.contains("Invalid Azure OpenAI base URL")
+        ));
     }
 
     #[test]
