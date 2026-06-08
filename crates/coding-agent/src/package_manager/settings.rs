@@ -198,15 +198,7 @@ fn relative_path(base: &Path, path: &Path) -> String {
     if relative.as_os_str().is_empty() {
         ".".to_string()
     } else {
-        explicit_relative_path(display_path(relative))
-    }
-}
-
-fn explicit_relative_path(path: String) -> String {
-    if path == "." || path.starts_with("./") || path.starts_with("../") {
-        path
-    } else {
-        format!("./{path}")
+        display_path(relative)
     }
 }
 
@@ -322,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn local_sources_under_settings_base_keep_dot_slash_prefix_like_pi() {
+    fn local_sources_under_settings_base_use_node_relative_output_like_pi() {
         let mut manager = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({}));
         assert!(add_source_to_settings(
             &mut manager,
@@ -334,7 +326,7 @@ mod tests {
 
         assert_eq!(
             manager.get_global_packages(),
-            vec![Value::String("./packages/demo".to_string())]
+            vec![Value::String("packages/demo".to_string())]
         );
     }
 }
