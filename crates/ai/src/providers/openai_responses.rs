@@ -220,6 +220,8 @@ struct OpenAiResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_retention: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
@@ -338,6 +340,7 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
         stream: true,
         store,
         prompt_cache_key: responses_prompt_cache_key(request),
+        prompt_cache_retention: responses_prompt_cache_retention(request),
         max_output_tokens: request.model.max_tokens,
         reasoning: None,
     }
@@ -346,6 +349,14 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
 fn responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
     let session_id = request.metadata.get("sessionId").and_then(Value::as_str);
     clamp_openai_prompt_cache_key(session_id)
+}
+
+fn responses_prompt_cache_retention(request: &StreamRequest) -> Option<String> {
+    let cache_retention = request
+        .metadata
+        .get("cacheRetention")
+        .and_then(Value::as_str);
+    (cache_retention == Some("long")).then(|| "24h".to_string())
 }
 
 fn responses_system_prompt_from_messages(messages: &[Message]) -> Option<String> {
@@ -850,6 +861,33 @@ mod tests {
             .expect("payload json");
 
         assert_eq!(value["prompt_cache_key"], "x".repeat(64));
+    }
+
+    #[test]
+    fn builds_responses_payload_prompt_cache_retention_for_long_cache_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("cacheRetention".to_string(), json!("long"))]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["prompt_cache_retention"], "24h");
     }
 
     #[test]
