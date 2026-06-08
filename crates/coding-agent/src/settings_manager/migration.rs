@@ -1,4 +1,6 @@
+use crate::keybindings::migrate_keybindings_config;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -148,6 +150,38 @@ pub fn migrate_tools_to_bin(agent_dir: impl AsRef<Path>) -> Result<bool, String>
     }
 
     Ok(moved_any)
+}
+
+pub fn migrate_keybindings_config_file(path: impl AsRef<Path>) -> Result<bool, String> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("读取 keybindings 文件 {} 失败：{error}", path.display()))?;
+    let value: Value = serde_json::from_str(&content)
+        .map_err(|error| format!("解析 keybindings 文件 {} 失败：{error}", path.display()))?;
+    let Some(object) = value.as_object() else {
+        return Ok(false);
+    };
+
+    let raw = object
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let (config, migrated) = migrate_keybindings_config(&raw);
+    if !migrated {
+        return Ok(false);
+    }
+
+    let content = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?
+    );
+    fs::write(path, content)
+        .map_err(|error| format!("写入 keybindings 文件 {} 失败：{error}", path.display()))?;
+    Ok(true)
 }
 
 fn migrate_legacy_skills(object: &mut Map<String, Value>) {

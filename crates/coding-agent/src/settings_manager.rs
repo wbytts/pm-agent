@@ -9,7 +9,8 @@ mod types;
 
 pub use merge::deep_merge_settings;
 pub use migration::{
-    migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_settings, migrate_tools_to_bin,
+    migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_keybindings_config_file,
+    migrate_settings, migrate_tools_to_bin,
 };
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
@@ -750,6 +751,54 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(bin_dir.join("rg")).expect("current rg should remain"),
             "current"
+        );
+    }
+
+    #[test]
+    fn migrates_keybindings_file_legacy_names_like_pi() {
+        let dir = temp_dir("keybindings");
+        let path = dir.join("keybindings.json");
+        std::fs::write(
+            &path,
+            json!({
+                "toggleThinking": ["ctrl+t"],
+                "submit": "ctrl+x",
+                "tui.input.submit": "enter"
+            })
+            .to_string(),
+        )
+        .expect("keybindings should be written");
+
+        assert!(migrate_keybindings_config_file(&path).expect("migration should succeed"));
+
+        let migrated: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&path).expect("keybindings should remain"),
+        )
+        .expect("keybindings should parse");
+        assert_eq!(migrated["app.thinking.toggle"], json!(["ctrl+t"]));
+        assert_eq!(migrated["tui.input.submit"], "enter");
+        assert!(migrated.get("toggleThinking").is_none());
+        assert!(migrated.get("submit").is_none());
+        assert!(std::fs::read_to_string(&path)
+            .expect("keybindings should remain")
+            .ends_with('\n'));
+    }
+
+    #[test]
+    fn leaves_current_keybindings_file_unchanged_like_pi() {
+        let dir = temp_dir("keybindings-current");
+        let path = dir.join("keybindings.json");
+        let content = serde_json::to_string(&json!({
+            "app.thinking.toggle": ["ctrl+t"]
+        }))
+        .expect("json should encode");
+        std::fs::write(&path, &content).expect("keybindings should be written");
+
+        assert!(!migrate_keybindings_config_file(&path).expect("migration should succeed"));
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("keybindings should remain"),
+            content
         );
     }
 
