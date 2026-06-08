@@ -56,8 +56,9 @@ impl<S: SettingsStorage> SettingsManager<S> {
     }
 
     pub fn reload(&mut self) {
-        self.global_settings = self.load_scope(SettingsScope::Global);
-        self.project_settings = self.load_scope(SettingsScope::Project);
+        self.global_settings = self.load_scope(SettingsScope::Global, self.global_settings.clone());
+        self.project_settings =
+            self.load_scope(SettingsScope::Project, self.project_settings.clone());
         self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
     }
 
@@ -409,7 +410,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
         self.save_scope(SettingsScope::Global);
     }
 
-    fn load_scope(&mut self, scope: SettingsScope) -> Value {
+    fn load_scope(&mut self, scope: SettingsScope, previous: Value) -> Value {
         match self.storage.read(scope) {
             Ok(Some(content)) => serde_json::from_str::<Value>(&content)
                 .map(migrate_settings)
@@ -418,7 +419,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
                         scope,
                         message: error.to_string(),
                     });
-                    Value::Object(Map::new())
+                    previous
                 }),
             Ok(None) => Value::Object(Map::new()),
             Err(error) => {
@@ -426,7 +427,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
                     scope,
                     message: error,
                 });
-                Value::Object(Map::new())
+                previous
             }
         }
     }
@@ -985,6 +986,27 @@ mod tests {
         let manager = SettingsManager::from_storage(storage);
         assert_eq!(manager.get_default_provider().as_deref(), Some("openai"));
         assert_eq!(manager.get_compaction_settings(), (false, 10, 20_000));
+    }
+
+    #[test]
+    fn reload_keeps_previous_settings_when_scope_json_is_invalid_like_pi() {
+        let mut storage = InMemorySettingsStorage::new();
+        storage
+            .write(
+                SettingsScope::Global,
+                json!({ "theme": "dark" }).to_string(),
+            )
+            .expect("global write should work");
+        let mut manager = SettingsManager::from_storage(storage);
+
+        manager
+            .storage
+            .write(SettingsScope::Global, "{ invalid json".to_string())
+            .expect("invalid global write should work");
+        manager.reload();
+
+        assert_eq!(manager.get_theme().as_deref(), Some("dark"));
+        assert_eq!(manager.drain_errors().len(), 1);
     }
 
     #[test]
