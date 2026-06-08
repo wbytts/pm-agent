@@ -23,10 +23,10 @@ mod tests {
     use super::*;
     use crate::image_registry::RegisteredImagesProvider;
     use crate::providers::{OpenRouterImagesConfig, OpenRouterImagesProvider};
-    use crate::types::{ContentBlock, ModelCost, ModelInputKind};
+    use crate::types::{ContentBlock, ImagesStopReason, ModelCost, ModelInputKind};
 
     #[test]
-    fn missing_openrouter_key_fails_before_network() {
+    fn missing_openrouter_key_returns_error_image_response_like_pi() {
         let model = ImagesModel {
             id: "openrouter/auto".to_string(),
             provider: "openrouter".to_string(),
@@ -48,7 +48,7 @@ mod tests {
             None,
         );
 
-        let error = generate_images(
+        let response = generate_images(
             model,
             ImagesContext {
                 input: vec![ContentBlock::Text {
@@ -57,7 +57,13 @@ mod tests {
             },
             &providers,
         )
-        .expect_err("missing key should fail first");
-        assert!(error.to_string().contains("OPENROUTER_API_KEY"));
+        .expect("provider errors should be represented in AssistantImages");
+
+        assert!(response.output.is_empty());
+        assert!(matches!(response.stop_reason, ImagesStopReason::Error));
+        assert!(response
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("OPENROUTER_API_KEY")));
     }
 }

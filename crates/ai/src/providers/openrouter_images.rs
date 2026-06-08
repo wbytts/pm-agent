@@ -45,7 +45,15 @@ impl ImagesProvider for OpenRouterImagesProvider {
         context: ImagesContext,
     ) -> AiResult<AssistantImages> {
         validate_images_model(&model)?;
-        let api_key = self.api_key()?;
+        let mut output = assistant_images_response(&model);
+        let api_key = match self.api_key() {
+            Ok(api_key) => api_key,
+            Err(error) => {
+                output.stop_reason = ImagesStopReason::Error;
+                output.error_message = Some(error.to_string());
+                return Ok(output);
+            }
+        };
         let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
         let payload = OpenRouterImagesRequest {
             model: model.id.clone(),
@@ -70,29 +78,48 @@ impl ImagesProvider for OpenRouterImagesProvider {
         for (key, value) in &model.headers {
             request = request.header(key, value);
         }
-        let response = request
-            .send()
-            .map_err(|error| AiError::Http(error.to_string()))?;
+        let response = match request.send() {
+            Ok(response) => response,
+            Err(error) => {
+                output.stop_reason = ImagesStopReason::Error;
+                output.error_message = Some(error.to_string());
+                return Ok(output);
+            }
+        };
         let status = response.status();
         if !status.is_success() {
             let body = response.text().unwrap_or_default();
-            return Err(AiError::Http(format!("status={status}, body={body}")));
+            output.stop_reason = ImagesStopReason::Error;
+            output.error_message = Some(format!("status={status}, body={body}"));
+            return Ok(output);
         }
-        let response = response
-            .json::<OpenRouterImagesResponse>()
-            .map_err(|error| AiError::InvalidResponse(error.to_string()))?;
+        let response = match response.json::<OpenRouterImagesResponse>() {
+            Ok(response) => response,
+            Err(error) => {
+                output.stop_reason = ImagesStopReason::Error;
+                output.error_message = Some(error.to_string());
+                return Ok(output);
+            }
+        };
 
-        Ok(AssistantImages {
-            api: model.api.clone(),
-            provider: model.provider.clone(),
-            model: model.id.clone(),
-            output: extract_output(&response),
-            response_id: response.id,
-            usage: response.usage.map(|usage| parse_usage(usage, &model)),
-            stop_reason: ImagesStopReason::Stop,
-            error_message: None,
-            timestamp_millis: now_millis(),
-        })
+        output.output = extract_output(&response);
+        output.response_id = response.id;
+        output.usage = response.usage.map(|usage| parse_usage(usage, &model));
+        Ok(output)
+    }
+}
+
+fn assistant_images_response(model: &ImagesModel) -> AssistantImages {
+    AssistantImages {
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        output: Vec::new(),
+        response_id: None,
+        usage: None,
+        stop_reason: ImagesStopReason::Stop,
+        error_message: None,
+        timestamp_millis: now_millis(),
     }
 }
 
@@ -262,6 +289,9 @@ fn now_millis() -> u128 {
 mod tests {
     use super::*;
     use crate::types::ModelCost;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn parses_data_url_images_from_openrouter_response() {
@@ -313,5 +343,51 @@ mod tests {
         assert_eq!(usage.cache_read, 15);
         assert_eq!(usage.cache_write, 5);
         assert_eq!(usage.total_tokens, 150);
+    }
+
+    #[test]
+    fn returns_error_response_for_openrouter_http_failures_like_pi() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer).expect("read");
+            stream
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\n\r\nboom")
+                .expect("write");
+        });
+
+        let provider = OpenRouterImagesProvider::new(OpenRouterImagesConfig {
+            api_key: Some("key".to_string()),
+        });
+        let response = provider
+            .generate_images(
+                ImagesModel {
+                    id: "openrouter/auto".to_string(),
+                    provider: "openrouter".to_string(),
+                    api: "openrouter-images".to_string(),
+                    display_name: "Auto Router".to_string(),
+                    base_url: format!("http://{address}"),
+                    input: vec![ModelInputKind::Text],
+                    output: vec![ModelInputKind::Image],
+                    headers: Default::default(),
+                    cost: ModelCost::default(),
+                },
+                ImagesContext {
+                    input: vec![ContentBlock::Text {
+                        text: "generate".to_string(),
+                    }],
+                },
+            )
+            .expect("provider errors should be represented in AssistantImages");
+
+        handle.join().expect("server thread");
+        assert!(matches!(response.stop_reason, ImagesStopReason::Error));
+        assert!(response.output.is_empty());
+        assert!(response
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("status=500")));
     }
 }
