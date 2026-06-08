@@ -183,6 +183,29 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
         Ok(model)
     }
 
+    fn cycle_model(&mut self) -> Result<Option<serde_json::Value>, String> {
+        let available_models = self.model_registry.get_available();
+        if available_models.len() <= 1 {
+            return Ok(None);
+        }
+        let current_index = available_models
+            .iter()
+            .position(|model| {
+                self.model.as_ref().is_some_and(|current| {
+                    current.provider == model.provider && current.id == model.id
+                })
+            })
+            .unwrap_or(0);
+        let next_model = available_models[(current_index + 1) % available_models.len()].clone();
+        self.model = Some(next_model.clone());
+        self.thinking_level = self.effective_thinking_level(self.thinking_level);
+        Ok(Some(serde_json::json!({
+            "model": next_model,
+            "thinkingLevel": self.thinking_level,
+            "isScoped": false,
+        })))
+    }
+
     fn available_models(&self) -> Result<Vec<Model>, String> {
         Ok(self.model_registry.get_available())
     }
@@ -339,6 +362,41 @@ mod tests {
             .expect_err("model should be missing");
 
         assert_eq!(error, "Model not found: missing/model");
+    }
+
+    #[test]
+    fn managed_backend_cycles_available_models_like_pi_rpc() {
+        let mut first = plain_model();
+        first.id = "first".to_string();
+        let mut second = reasoning_model();
+        second.id = "second".to_string();
+        let mut backend = test_backend_with_models(vec![first, second]);
+
+        let result = backend
+            .cycle_model()
+            .expect("cycle model")
+            .expect("second model should be selected");
+
+        assert_eq!(result["model"]["id"], "second");
+        assert_eq!(result["thinkingLevel"], "medium");
+        assert_eq!(result["isScoped"], false);
+        assert_eq!(
+            backend.model().expect("model should update").id.as_str(),
+            "second"
+        );
+        assert_eq!(
+            backend.state().expect("state").thinking_level,
+            ModelThinkingLevel::Medium
+        );
+    }
+
+    #[test]
+    fn managed_backend_cycle_model_returns_null_for_single_available_model_like_pi_rpc() {
+        let mut backend = test_backend_with_models(vec![plain_model()]);
+
+        let result = backend.cycle_model().expect("cycle model");
+
+        assert!(result.is_none());
     }
 
     #[test]
