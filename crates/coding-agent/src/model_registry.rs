@@ -312,7 +312,7 @@ impl<B: AuthStorageBackend> ModelRegistry<B> {
             &format!("model \"{}/{}\"", model.provider, model.id),
         )?;
 
-        let mut headers = BTreeMap::new();
+        let mut headers = model.headers.clone();
         if let Some(provider_headers) = provider_headers {
             headers.extend(provider_headers);
         }
@@ -433,6 +433,29 @@ mod tests {
             auth.headers
                 .and_then(|headers| headers.get("X-Demo").cloned()),
             Some("literal".to_string())
+        );
+    }
+
+    #[test]
+    fn request_auth_includes_model_builtin_headers_like_pi() {
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let registry = ModelRegistry::in_memory(storage);
+        let mut model = Model {
+            provider: "local".to_string(),
+            id: "echo".to_string(),
+            ..Model::default()
+        };
+        model
+            .headers
+            .insert("X-Model".to_string(), "builtin".to_string());
+
+        let auth = registry.get_api_key_and_headers(&model);
+
+        assert!(auth.ok);
+        assert_eq!(
+            auth.headers
+                .and_then(|headers| headers.get("X-Model").cloned()),
+            Some("builtin".to_string())
         );
     }
 
