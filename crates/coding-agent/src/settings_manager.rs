@@ -1,6 +1,7 @@
 use serde_json::{Map, Value};
 
 use crate::http_dispatcher::{parse_http_idle_timeout_ms, DEFAULT_HTTP_IDLE_TIMEOUT_MS};
+use crate::utils::paths::normalize_path;
 
 mod merge;
 mod migration;
@@ -84,6 +85,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     pub fn get_session_dir(&self) -> Option<String> {
         self.get_string("sessionDir")
+            .map(|path| normalize_path(&path, None).to_string_lossy().to_string())
     }
 
     pub fn get_default_provider(&self) -> Option<String> {
@@ -983,6 +985,22 @@ mod tests {
         let manager = SettingsManager::from_storage(storage);
         assert_eq!(manager.get_default_provider().as_deref(), Some("openai"));
         assert_eq!(manager.get_compaction_settings(), (false, 10, 20_000));
+    }
+
+    #[test]
+    fn session_dir_expands_home_like_pi_settings() {
+        let manager = SettingsManager::in_memory(json!({
+            "sessionDir": "~/sessions"
+        }));
+
+        assert_eq!(
+            manager.get_session_dir().as_deref(),
+            Some(
+                crate::utils::paths::normalize_path("~/sessions", None)
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
     }
 
     #[test]
