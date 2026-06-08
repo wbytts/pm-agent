@@ -9,8 +9,9 @@ pub mod truncate;
 pub mod types;
 
 pub use compaction::{
-    calculate_context_tokens, estimate_context_tokens, estimate_tokens, should_compact,
-    CompactionSettings, ContextUsageEstimate, DEFAULT_COMPACTION_SETTINGS,
+    calculate_context_tokens, collect_entries_for_branch_summary, estimate_context_tokens,
+    estimate_tokens, should_compact, BranchSummaryEntries, CompactionSettings,
+    ContextUsageEstimate, DEFAULT_COMPACTION_SETTINGS,
 };
 #[cfg(unix)]
 pub use env::file_info_from_unix_mode;

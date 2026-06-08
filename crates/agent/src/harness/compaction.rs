@@ -1,5 +1,7 @@
 use ai::{AssistantStopReason, MessageRole, Usage};
 
+use crate::harness::session::{Session, SessionStorage, SessionTreeEntry};
+use crate::harness::types::{SessionError, SessionErrorCode, SessionResult};
 use crate::state::AgentMessage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +16,12 @@ pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
     reserve_tokens: 16_384,
     keep_recent_tokens: 20_000,
 };
+
+#[derive(Debug, Clone)]
+pub struct BranchSummaryEntries {
+    pub entries: Vec<SessionTreeEntry>,
+    pub common_ancestor_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextUsageEstimate {
@@ -84,9 +92,60 @@ fn assistant_usage(message: &AgentMessage) -> Option<&Usage> {
     }
 }
 
+pub fn collect_entries_for_branch_summary<S: SessionStorage>(
+    session: &Session<S>,
+    old_leaf_id: Option<&str>,
+    target_id: &str,
+) -> SessionResult<BranchSummaryEntries> {
+    let Some(old_leaf_id) = old_leaf_id else {
+        return Ok(BranchSummaryEntries {
+            entries: Vec::new(),
+            common_ancestor_id: None,
+        });
+    };
+    let old_path = session
+        .branch(Some(old_leaf_id))?
+        .into_iter()
+        .map(|entry| entry.id().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    let target_path = session.branch(Some(target_id))?;
+    let common_ancestor_id = target_path
+        .iter()
+        .rev()
+        .find(|entry| old_path.contains(entry.id()))
+        .map(|entry| entry.id().to_string());
+
+    let mut entries = Vec::new();
+    let mut current = Some(old_leaf_id.to_string());
+    while let Some(current_id) = current {
+        if common_ancestor_id.as_deref() == Some(current_id.as_str()) {
+            break;
+        }
+        let entry = session
+            .storage()
+            .entry(&current_id)
+            .cloned()
+            .ok_or_else(|| {
+                SessionError::new(
+                    SessionErrorCode::InvalidSession,
+                    format!("Entry {current_id} not found"),
+                )
+            })?;
+        current = entry.parent_id().map(ToString::to_string);
+        entries.push(entry);
+    }
+    entries.reverse();
+
+    Ok(BranchSummaryEntries {
+        entries,
+        common_ancestor_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::session::{InMemorySessionStorage, Session};
     use ai::{Usage, UsageCost};
 
     fn message(role: MessageRole, content: &str) -> AgentMessage {
@@ -174,5 +233,42 @@ mod tests {
         assert_eq!(estimate.trailing_tokens, 2);
         assert_eq!(estimate.tokens, 20);
         assert_eq!(estimate.last_usage_index, Some(1));
+    }
+
+    #[test]
+    fn collects_entries_for_branch_summary_like_pi() {
+        let storage = InMemorySessionStorage::default();
+        let mut session = Session::new(storage);
+        let root = session
+            .append_message(message(MessageRole::User, "root"))
+            .expect("root should append");
+        let old_leaf = session
+            .append_message(message(MessageRole::Assistant, "old answer"))
+            .expect("old answer should append");
+        session
+            .move_to(Some(root.clone()), None)
+            .expect("should move back to root");
+        let target = session
+            .append_message(message(MessageRole::User, "new branch"))
+            .expect("target branch should append");
+
+        let result = collect_entries_for_branch_summary(&session, Some(&old_leaf), &target)
+            .expect("branch entries should collect");
+
+        assert_eq!(result.common_ancestor_id.as_deref(), Some(root.as_str()));
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].id(), old_leaf);
+    }
+
+    #[test]
+    fn collect_entries_for_branch_summary_returns_empty_without_old_leaf_like_pi() {
+        let storage = InMemorySessionStorage::default();
+        let session = Session::new(storage);
+
+        let result = collect_entries_for_branch_summary(&session, None, "missing")
+            .expect("empty old leaf should short-circuit");
+
+        assert!(result.entries.is_empty());
+        assert_eq!(result.common_ancestor_id, None);
     }
 }
