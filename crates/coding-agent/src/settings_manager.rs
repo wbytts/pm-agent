@@ -280,7 +280,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     pub fn get_clear_on_shrink(&self) -> bool {
         self.get_nested_bool("terminal", "clearOnShrink")
-            .unwrap_or(false)
+            .unwrap_or_else(|| std::env::var("PI_CLEAR_ON_SHRINK").is_ok_and(|value| value == "1"))
     }
 
     pub fn get_show_terminal_progress(&self) -> bool {
@@ -484,6 +484,12 @@ fn object_mut(value: &mut Value) -> &mut Map<String, Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn migrates_legacy_settings() {
@@ -541,5 +547,31 @@ mod tests {
         manager.set_default_model_and_provider("anthropic".to_string(), "claude".to_string());
         assert_eq!(manager.get_default_provider().as_deref(), Some("anthropic"));
         assert_eq!(manager.get_default_model().as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn clear_on_shrink_falls_back_to_pi_env_like_pi_settings() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        let previous = std::env::var_os("PI_CLEAR_ON_SHRINK");
+        unsafe {
+            std::env::set_var("PI_CLEAR_ON_SHRINK", "1");
+        }
+
+        let manager = SettingsManager::in_memory(json!({}));
+        assert!(manager.get_clear_on_shrink());
+
+        let manager = SettingsManager::in_memory(json!({
+            "terminal": {
+                "clearOnShrink": false
+            }
+        }));
+        assert!(!manager.get_clear_on_shrink());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PI_CLEAR_ON_SHRINK", value),
+                None => std::env::remove_var("PI_CLEAR_ON_SHRINK"),
+            }
+        }
     }
 }
