@@ -250,12 +250,51 @@ impl<S: SettingsStorage> SettingsManager<S> {
         self.get_string("shellPath")
     }
 
+    pub fn set_shell_path(&mut self, path: Option<String>) {
+        self.set_optional_global_string("shellPath", path);
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_quiet_startup(&self) -> bool {
         self.get_bool("quietStartup").unwrap_or(false)
     }
 
+    pub fn set_quiet_startup(&mut self, quiet: bool) {
+        self.set_global("quietStartup", Value::Bool(quiet));
+        self.save_scope(SettingsScope::Global);
+    }
+
     pub fn get_shell_command_prefix(&self) -> Option<String> {
         self.get_string("shellCommandPrefix")
+    }
+
+    pub fn set_shell_command_prefix(&mut self, prefix: Option<String>) {
+        self.set_optional_global_string("shellCommandPrefix", prefix);
+        self.save_scope(SettingsScope::Global);
+    }
+
+    pub fn get_npm_command(&self) -> Option<Vec<String>> {
+        let command = self.get_string_array("npmCommand");
+        (!command.is_empty()).then_some(command)
+    }
+
+    pub fn set_npm_command(&mut self, command: Option<Vec<String>>) {
+        match command {
+            Some(command) => self.set_global_string_array("npmCommand", command),
+            None => {
+                object_mut(&mut self.global_settings).remove("npmCommand");
+            }
+        }
+        self.save_scope(SettingsScope::Global);
+    }
+
+    pub fn get_collapse_changelog(&self) -> bool {
+        self.get_bool("collapseChangelog").unwrap_or(false)
+    }
+
+    pub fn set_collapse_changelog(&mut self, collapse: bool) {
+        self.set_global("collapseChangelog", Value::Bool(collapse));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_packages(&self) -> Vec<Value> {
@@ -377,6 +416,11 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     pub fn get_enable_install_telemetry(&self) -> bool {
         self.get_bool("enableInstallTelemetry").unwrap_or(true)
+    }
+
+    pub fn set_enable_install_telemetry(&mut self, enabled: bool) {
+        self.set_global("enableInstallTelemetry", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_http_idle_timeout_ms(&self) -> u64 {
@@ -569,6 +613,15 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     fn set_global(&mut self, key: &str, value: Value) {
         object_mut(&mut self.global_settings).insert(key.to_string(), value);
+    }
+
+    fn set_optional_global_string(&mut self, key: &str, value: Option<String>) {
+        match value {
+            Some(value) => self.set_global(key, Value::String(value)),
+            None => {
+                object_mut(&mut self.global_settings).remove(key);
+            }
+        }
     }
 
     fn set_project(&mut self, key: &str, value: Value) {
@@ -1184,6 +1237,39 @@ mod tests {
         }));
 
         assert!(manager.get_branch_summary_skip_prompt());
+    }
+
+    #[test]
+    fn shell_npm_changelog_and_telemetry_setters_match_pi_settings() {
+        let mut manager = SettingsManager::in_memory(json!({}));
+
+        manager.set_shell_path(Some("/bin/zsh".to_string()));
+        manager.set_quiet_startup(true);
+        manager.set_shell_command_prefix(Some("shopt -s expand_aliases".to_string()));
+        manager.set_npm_command(Some(vec!["bun".to_string(), "--bun".to_string()]));
+        manager.set_collapse_changelog(true);
+        manager.set_enable_install_telemetry(false);
+
+        assert_eq!(manager.get_shell_path().as_deref(), Some("/bin/zsh"));
+        assert!(manager.get_quiet_startup());
+        assert_eq!(
+            manager.get_shell_command_prefix().as_deref(),
+            Some("shopt -s expand_aliases")
+        );
+        assert_eq!(
+            manager.get_npm_command(),
+            Some(vec!["bun".to_string(), "--bun".to_string()])
+        );
+        assert!(manager.get_collapse_changelog());
+        assert!(!manager.get_enable_install_telemetry());
+
+        manager.set_shell_path(None);
+        manager.set_shell_command_prefix(None);
+        manager.set_npm_command(None);
+
+        assert_eq!(manager.get_shell_path(), None);
+        assert_eq!(manager.get_shell_command_prefix(), None);
+        assert_eq!(manager.get_npm_command(), None);
     }
 
     #[test]
