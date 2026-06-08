@@ -236,6 +236,8 @@ mod tests {
         thinking_level: ModelThinkingLevel,
         auto_retry_enabled: bool,
         retry_aborted: bool,
+        aborted: bool,
+        bash_aborted: bool,
     }
 
     impl Default for TestBackend {
@@ -248,6 +250,8 @@ mod tests {
                 thinking_level: ModelThinkingLevel::Off,
                 auto_retry_enabled: true,
                 retry_aborted: false,
+                aborted: false,
+                bash_aborted: false,
             }
         }
     }
@@ -266,6 +270,11 @@ mod tests {
 
         fn follow_up(&mut self, message: String) -> Result<(), String> {
             self.follow_up_messages.push(message);
+            Ok(())
+        }
+
+        fn abort(&mut self) -> Result<(), String> {
+            self.aborted = true;
             Ok(())
         }
 
@@ -311,6 +320,11 @@ mod tests {
 
         fn abort_retry(&mut self) -> Result<(), String> {
             self.retry_aborted = true;
+            Ok(())
+        }
+
+        fn abort_bash(&mut self) -> Result<(), String> {
+            self.bash_aborted = true;
             Ok(())
         }
 
@@ -440,6 +454,23 @@ mod tests {
                 .pending_message_count,
             2
         );
+    }
+
+    #[test]
+    fn dispatches_abort_commands_like_pi() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::Abort {
+            id: Some("abort".to_string()),
+        });
+        assert!(response.is_success());
+        assert!(dispatcher.backend().aborted);
+
+        let response = dispatcher.handle_command(RpcCommand::AbortBash {
+            id: Some("abort-bash".to_string()),
+        });
+        assert!(response.is_success());
+        assert!(dispatcher.backend().bash_aborted);
     }
 
     #[test]

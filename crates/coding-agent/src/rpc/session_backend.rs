@@ -194,6 +194,10 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
         Ok(())
     }
 
+    fn abort(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn set_model(&mut self, provider: String, model_id: String) -> Result<Model, String> {
         let model = self
             .model_registry
@@ -284,6 +288,10 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
         self.session_manager
             .append_message(AgentMessage::new(MessageRole::Tool, result.output.clone()))?;
         Ok(result)
+    }
+
+    fn abort_bash(&mut self) -> Result<(), String> {
+        Ok(())
     }
 
     fn session_stats(&self) -> Result<SessionStats, String> {
@@ -589,6 +597,19 @@ mod tests {
         assert!(!backend.auto_retry_enabled());
 
         backend.abort_retry().expect("abort retry");
+    }
+
+    #[test]
+    fn managed_backend_aborts_idle_session_and_bash_like_pi_rpc() {
+        let mut backend = test_backend();
+
+        backend.abort().expect("abort should be idempotent");
+        backend
+            .abort_bash()
+            .expect("abort bash should be idempotent");
+
+        let state = backend.state().expect("state");
+        assert!(!state.is_streaming);
     }
 
     #[test]
