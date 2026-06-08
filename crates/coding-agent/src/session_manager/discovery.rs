@@ -118,7 +118,7 @@ pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
     let metadata = storage.metadata().clone();
     let entries = storage.entries();
     let stat = path.metadata().ok()?;
-    let modified_millis = stat
+    let stat_modified_millis = stat
         .modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
@@ -127,12 +127,12 @@ pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
     let mut first_message = String::new();
     let mut all_messages = Vec::new();
     let mut name = None;
-    for entry in entries {
+    for entry in &entries {
         match entry {
             SessionTreeEntry::SessionInfo {
                 name: next_name, ..
             } => {
-                name = (!next_name.trim().is_empty()).then_some(next_name);
+                name = (!next_name.trim().is_empty()).then_some(next_name.clone());
             }
             SessionTreeEntry::Message { message, .. } => {
                 message_count += 1;
@@ -143,12 +143,14 @@ pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
                     message.role,
                     ai::MessageRole::User | ai::MessageRole::Assistant
                 ) {
-                    all_messages.push(message.content);
+                    all_messages.push(message.content.clone());
                 }
             }
             _ => {}
         }
     }
+    let modified_millis =
+        session_modified_millis(&entries, &metadata.created_at, stat_modified_millis);
 
     Some(SessionInfo {
         path: path.to_string_lossy().to_string(),
@@ -166,6 +168,34 @@ pub(super) fn build_session_info(path: &Path) -> Option<SessionInfo> {
         },
         all_messages_text: all_messages.join(" "),
     })
+}
+
+fn session_modified_millis(
+    entries: &[SessionTreeEntry],
+    header_timestamp: &str,
+    stat_modified_millis: u128,
+) -> u128 {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            SessionTreeEntry::Message {
+                timestamp, message, ..
+            } if matches!(
+                message.role,
+                ai::MessageRole::User | ai::MessageRole::Assistant
+            ) =>
+            {
+                Some(parse_millis(timestamp))
+            }
+            _ => None,
+        })
+        .max()
+        .filter(|value| *value > 0)
+        .or_else(|| {
+            let header_millis = parse_millis(header_timestamp);
+            (header_millis > 0).then_some(header_millis)
+        })
+        .unwrap_or(stat_modified_millis)
 }
 
 fn looks_like_session_path(session_arg: &str) -> bool {
@@ -310,6 +340,48 @@ mod tests {
                 cwd: "/tmp/other".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn list_sessions_sorts_by_message_activity_timestamp_like_pi() {
+        let dir = temp_dir("activity-sort");
+        let old_file = dir.join("newer-file-old-activity.jsonl");
+        let new_file = dir.join("older-file-new-activity.jsonl");
+        write_session_file(
+            &old_file,
+            "old-activity",
+            "1000",
+            &[("message-old", "1001", "User", "old")],
+        );
+        write_session_file(
+            &new_file,
+            "new-activity",
+            "1000",
+            &[("message-new", "2000", "User", "new")],
+        );
+
+        let sessions = list_sessions_from_dir(&dir);
+
+        assert_eq!(sessions[0].id, "new-activity");
+        assert_eq!(sessions[0].modified_millis, 2000);
+        assert_eq!(sessions[1].id, "old-activity");
+    }
+
+    fn write_session_file(
+        path: &Path,
+        id: &str,
+        header_timestamp: &str,
+        messages: &[(&str, &str, &str, &str)],
+    ) {
+        let mut lines = vec![format!(
+            r#"{{"type":"session","version":3,"id":"{id}","timestamp":"{header_timestamp}","cwd":"/tmp/project"}}"#
+        )];
+        for (entry_id, timestamp, role, content) in messages {
+            lines.push(format!(
+                r#"{{"type":"message","id":"{entry_id}","parentId":null,"timestamp":"{timestamp}","message":{{"role":"{role}","content":"{content}"}}}}"#
+            ));
+        }
+        fs::write(path, format!("{}\n", lines.join("\n"))).expect("session file should write");
     }
 
     fn temp_dir(label: &str) -> PathBuf {
