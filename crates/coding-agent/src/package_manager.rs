@@ -1500,6 +1500,75 @@ mod tests {
     }
 
     #[test]
+    fn auto_discovered_agents_skills_ignore_root_markdown_files_like_pi() {
+        let root = temp_dir();
+        let agent_dir = temp_dir();
+        let project_base_dir = root.join(".pi");
+        let cwd = root.join("work");
+        fs::create_dir_all(&cwd).expect("cwd should exist");
+
+        let agents_skills_dir = root.join(".agents").join("skills");
+        let root_markdown = agents_skills_dir.join("root-file.md");
+        let nested_skill = agents_skills_dir.join("nested-skill").join("SKILL.md");
+        write_file(&root_markdown);
+        write_file(&nested_skill);
+
+        let resolved = resolve_auto_discovered_resources(
+            &agent_dir,
+            &project_base_dir,
+            &cwd,
+            None,
+            None,
+            None,
+        );
+
+        assert!(!resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &root_markdown)));
+        assert!(resolved
+            .skills
+            .iter()
+            .any(|resource| same_existing_path(&resource.path, &nested_skill) && resource.enabled));
+    }
+
+    #[test]
+    fn home_agents_skills_stay_user_scoped_under_non_git_home_cwd_like_pi() {
+        let root = temp_dir();
+        let agent_dir = root.join(".pi").join("agent");
+        let project_base_dir = root.join("scratch").join(".pi");
+        let cwd = root.join("scratch").join("nested");
+        let user_agents_dir = root.join(".agents");
+        fs::create_dir_all(&agent_dir).expect("agent dir should exist");
+        fs::create_dir_all(&cwd).expect("cwd should exist");
+
+        let home_skill = user_agents_dir
+            .join("skills")
+            .join("home-skill")
+            .join("SKILL.md");
+        write_file(&home_skill);
+
+        let resolved = resolve_auto_discovered_resources(
+            &agent_dir,
+            &project_base_dir,
+            &cwd,
+            Some(user_agents_dir.as_path()),
+            None,
+            None,
+        );
+        let matching = resolved
+            .skills
+            .iter()
+            .filter(|resource| same_existing_path(&resource.path, &home_skill))
+            .collect::<Vec<_>>();
+
+        assert_eq!(matching.len(), 1);
+        assert!(matching[0].enabled);
+        assert_eq!(matching[0].metadata.scope, SourceScope::User);
+        assert_eq!(matching[0].metadata.source, "auto");
+    }
+
+    #[test]
     fn auto_discovered_prompts_and_themes_only_scan_top_level_like_pi() {
         let agent_dir = temp_dir();
         let project_base_dir = temp_dir().join(".pi");
