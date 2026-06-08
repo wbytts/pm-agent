@@ -1023,15 +1023,13 @@ fn append_entry_message(messages: &mut Vec<AgentMessage>, entry: &SessionTreeEnt
             details,
             ..
         } => {
-            if *display {
-                messages.push(custom_agent_message(CustomMessage {
-                    custom_type: custom_type.clone(),
-                    content: content.clone(),
-                    display: *display,
-                    details: details.clone(),
-                    timestamp: 0,
-                }));
-            }
+            messages.push(custom_agent_message(CustomMessage {
+                custom_type: custom_type.clone(),
+                content: content.clone(),
+                display: *display,
+                details: details.clone(),
+                timestamp: 0,
+            }));
         }
         SessionTreeEntry::BranchSummary {
             from_id, summary, ..
@@ -1576,6 +1574,21 @@ mod tests {
             session.storage().entry(&custom_message_id),
             Some(SessionTreeEntry::CustomMessage { display, .. }) if *display
         ));
+    }
+
+    #[test]
+    fn build_context_keeps_hidden_custom_messages_like_pi() {
+        let storage = InMemorySessionStorage::default();
+        let mut session = Session::new(storage);
+        session
+            .append_custom_message_entry("notice", "hidden context", false, None)
+            .expect("custom message should append");
+
+        let context = session.build_context().expect("context should build");
+
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(context.messages[0].role, MessageRole::User);
+        assert_eq!(context.messages[0].content, "hidden context");
     }
 
     #[test]
