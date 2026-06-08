@@ -309,10 +309,12 @@ impl<S: SettingsStorage> SettingsManager<S> {
     }
 
     pub fn get_http_idle_timeout_ms(&self) -> u64 {
-        self.settings
-            .get("httpIdleTimeoutMs")
-            .and_then(parse_http_idle_timeout_value)
-            .unwrap_or(DEFAULT_HTTP_IDLE_TIMEOUT_MS)
+        match self.settings.get("httpIdleTimeoutMs") {
+            Some(value) => parse_http_idle_timeout_value(value).unwrap_or_else(|| {
+                panic!("Invalid httpIdleTimeoutMs setting: {value}");
+            }),
+            None => DEFAULT_HTTP_IDLE_TIMEOUT_MS,
+        }
     }
 
     pub fn get_enabled_models(&self) -> Option<Vec<String>> {
@@ -1007,6 +1009,16 @@ mod tests {
 
         assert_eq!(manager.get_theme().as_deref(), Some("dark"));
         assert_eq!(manager.drain_errors().len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid httpIdleTimeoutMs setting")]
+    fn http_idle_timeout_rejects_invalid_values_like_pi_settings() {
+        let manager = SettingsManager::in_memory(json!({
+            "httpIdleTimeoutMs": -1
+        }));
+
+        manager.get_http_idle_timeout_ms();
     }
 
     #[test]
