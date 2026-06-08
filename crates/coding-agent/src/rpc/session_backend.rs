@@ -24,6 +24,7 @@ pub struct ManagedRpcSessionBackend<S: SessionStorage, B: AuthStorageBackend> {
     steering_mode: QueueMode,
     follow_up_mode: QueueMode,
     auto_compaction_enabled: bool,
+    auto_retry_enabled: bool,
     command_registry: RpcCommandRegistry,
     prompt_input: PromptInputProcessor,
 }
@@ -39,6 +40,7 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
             steering_mode: QueueMode::OneAtATime,
             follow_up_mode: QueueMode::OneAtATime,
             auto_compaction_enabled: true,
+            auto_retry_enabled: true,
             command_registry: RpcCommandRegistry::default(),
             prompt_input: PromptInputProcessor::new(),
         }
@@ -103,6 +105,10 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
 
     pub fn model(&self) -> Option<&Model> {
         self.model.as_ref()
+    }
+
+    pub fn auto_retry_enabled(&self) -> bool {
+        self.auto_retry_enabled
     }
 
     fn available_thinking_levels(&self) -> Vec<ModelThinkingLevel> {
@@ -213,6 +219,15 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
 
     fn set_auto_compaction(&mut self, enabled: bool) -> Result<(), String> {
         self.auto_compaction_enabled = enabled;
+        Ok(())
+    }
+
+    fn set_auto_retry(&mut self, enabled: bool) -> Result<(), String> {
+        self.auto_retry_enabled = enabled;
+        Ok(())
+    }
+
+    fn abort_retry(&mut self) -> Result<(), String> {
         Ok(())
     }
 
@@ -485,6 +500,16 @@ mod tests {
             backend.messages().expect("messages")[0].content,
             "/review input"
         );
+    }
+
+    #[test]
+    fn managed_backend_updates_auto_retry_and_aborts_retry_like_pi_rpc() {
+        let mut backend = test_backend();
+
+        backend.set_auto_retry(false).expect("set auto retry");
+        assert!(!backend.auto_retry_enabled());
+
+        backend.abort_retry().expect("abort retry");
     }
 
     #[test]

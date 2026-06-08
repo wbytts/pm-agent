@@ -232,6 +232,8 @@ mod tests {
         messages: Vec<AgentMessage>,
         session_name: Option<String>,
         thinking_level: ModelThinkingLevel,
+        auto_retry_enabled: bool,
+        retry_aborted: bool,
     }
 
     impl Default for TestBackend {
@@ -240,6 +242,8 @@ mod tests {
                 messages: Vec::new(),
                 session_name: None,
                 thinking_level: ModelThinkingLevel::Off,
+                auto_retry_enabled: true,
+                retry_aborted: false,
             }
         }
     }
@@ -284,6 +288,16 @@ mod tests {
         fn cycle_thinking_level(&mut self) -> Result<Option<ModelThinkingLevel>, String> {
             self.thinking_level = ModelThinkingLevel::High;
             Ok(Some(self.thinking_level))
+        }
+
+        fn set_auto_retry(&mut self, enabled: bool) -> Result<(), String> {
+            self.auto_retry_enabled = enabled;
+            Ok(())
+        }
+
+        fn abort_retry(&mut self) -> Result<(), String> {
+            self.retry_aborted = true;
+            Ok(())
         }
 
         fn last_assistant_text(&self) -> Result<Option<String>, String> {
@@ -364,6 +378,24 @@ mod tests {
                 .thinking_level,
             ModelThinkingLevel::High
         );
+    }
+
+    #[test]
+    fn dispatches_retry_commands_like_pi() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::SetAutoRetry {
+            id: Some("retry".to_string()),
+            enabled: false,
+        });
+        assert!(response.is_success());
+        assert!(!dispatcher.backend().auto_retry_enabled);
+
+        let response = dispatcher.handle_command(RpcCommand::AbortRetry {
+            id: Some("abort-retry".to_string()),
+        });
+        assert!(response.is_success());
+        assert!(dispatcher.backend().retry_aborted);
     }
 
     #[test]
