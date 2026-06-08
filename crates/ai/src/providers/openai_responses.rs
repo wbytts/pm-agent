@@ -201,7 +201,7 @@ impl LanguageModelProvider for OpenAiCodexResponsesProvider {
             codex_responses_url(&base_url),
             Some(api_key),
             &responses_request_headers(&request),
-            build_responses_payload(&request, Some(false)),
+            build_codex_responses_payload(&request),
         )
     }
 }
@@ -212,7 +212,11 @@ struct OpenAiResponsesPayload {
     input: Vec<OpenAiResponsesInputItem>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     store: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -229,6 +233,10 @@ struct OpenAiResponsesPayload {
     include: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -351,7 +359,9 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
             )
         },
         stream: true,
+        instructions: None,
         store,
+        text: None,
         prompt_cache_key: responses_prompt_cache_key(request),
         prompt_cache_retention: responses_prompt_cache_retention(request),
         max_output_tokens: request.model.max_tokens,
@@ -364,6 +374,8 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
         tools: convert_responses_tools(&request.tools),
         include: responses_include(request),
         reasoning: responses_reasoning(request),
+        tool_choice: None,
+        parallel_tool_calls: None,
     }
 }
 
@@ -377,6 +389,42 @@ fn build_azure_responses_payload(
         prompt_cache_key: azure_responses_prompt_cache_key(request),
         prompt_cache_retention: None,
         ..build_responses_payload(request, None)
+    }
+}
+
+fn build_codex_responses_payload(request: &StreamRequest) -> OpenAiResponsesPayload {
+    OpenAiResponsesPayload {
+        instructions: Some(
+            responses_system_prompt_from_messages(&request.messages)
+                .unwrap_or_else(|| "You are a helpful assistant.".to_string()),
+        ),
+        input: if request.rich_messages.is_empty() {
+            convert_responses_messages_without_system(&request.messages)
+        } else {
+            convert_openai_responses_messages(
+                &request.model,
+                &OpenAiResponsesContext {
+                    system_prompt: responses_system_prompt_from_messages(&request.messages),
+                    messages: request.rich_messages.clone(),
+                },
+                ConvertResponsesMessagesOptions {
+                    include_system_prompt: false,
+                    ..ConvertResponsesMessagesOptions::default()
+                },
+            )
+        },
+        text: Some(json!({
+            "verbosity": request
+                .metadata
+                .get("textVerbosity")
+                .and_then(Value::as_str)
+                .unwrap_or("low"),
+        })),
+        include: Some(vec!["reasoning.encrypted_content".to_string()]),
+        prompt_cache_key: azure_responses_prompt_cache_key(request),
+        tool_choice: Some("auto".to_string()),
+        parallel_tool_calls: Some(true),
+        ..build_responses_payload(request, Some(false))
     }
 }
 
@@ -528,6 +576,17 @@ fn responses_request_headers(request: &StreamRequest) -> BTreeMap<String, String
         .entry("x-client-request-id".to_string())
         .or_insert_with(|| session_id.to_string());
     headers
+}
+
+fn convert_responses_messages_without_system(
+    messages: &[Message],
+) -> Vec<OpenAiResponsesInputItem> {
+    let filtered = messages
+        .iter()
+        .filter(|message| message.role != MessageRole::System)
+        .cloned()
+        .collect::<Vec<_>>();
+    convert_responses_messages(&filtered)
 }
 
 fn responses_system_prompt_from_messages(messages: &[Message]) -> Option<String> {
@@ -1005,6 +1064,49 @@ mod tests {
         assert!(payload.stream);
         assert_eq!(payload.store, Some(false));
         assert_eq!(payload.max_output_tokens, Some(2048));
+    }
+
+    #[test]
+    fn builds_codex_responses_payload_defaults_like_pi() {
+        let model = Model {
+            id: "gpt-5-codex".to_string(),
+            provider: "openai-codex".to_string(),
+            api: "openai-codex-responses".to_string(),
+            display_name: "GPT-5 Codex".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![
+                Message {
+                    role: MessageRole::System,
+                    content: "Use terse answers.".to_string(),
+                },
+                Message {
+                    role: MessageRole::User,
+                    content: "hello".to_string(),
+                },
+            ],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("sessionId".to_string(), json!("codex-session"))]),
+        };
+
+        let value =
+            serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
+
+        assert_eq!(value["instructions"], "Use terse answers.");
+        assert_eq!(value["text"]["verbosity"], "low");
+        assert_eq!(value["include"][0], "reasoning.encrypted_content");
+        assert_eq!(value["tool_choice"], "auto");
+        assert_eq!(value["parallel_tool_calls"], true);
+        assert_eq!(value["prompt_cache_key"], "codex-session");
+        assert!(value["input"]
+            .as_array()
+            .expect("input")
+            .iter()
+            .all(|item| item["role"] != "system"));
     }
 
     #[test]
