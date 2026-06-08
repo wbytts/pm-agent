@@ -425,6 +425,7 @@ fn build_codex_responses_payload(request: &StreamRequest) -> OpenAiResponsesPayl
         tool_choice: Some("auto".to_string()),
         parallel_tool_calls: Some(true),
         tools: convert_codex_responses_tools(&request.tools),
+        reasoning: codex_responses_reasoning(request),
         ..build_responses_payload(request, Some(false))
     }
 }
@@ -454,6 +455,31 @@ fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
         None => "none",
     };
     Some(json!({ "effort": off_effort }))
+}
+
+fn codex_responses_reasoning(request: &StreamRequest) -> Option<Value> {
+    let level = request.metadata.get("reasoning").and_then(Value::as_str)?;
+    let effort = if level == "none" {
+        match request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::Off)
+        {
+            Some(Some(effort)) => effort.clone(),
+            Some(None) => return None,
+            None => "none".to_string(),
+        }
+    } else {
+        responses_mapped_reasoning_effort(request, level)?
+    };
+    Some(json!({
+        "effort": effort,
+        "summary": request
+            .metadata
+            .get("reasoningSummary")
+            .and_then(Value::as_str)
+            .unwrap_or("auto"),
+    }))
 }
 
 fn responses_include(request: &StreamRequest) -> Option<Vec<String>> {
@@ -1161,6 +1187,66 @@ mod tests {
             serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
 
         assert_eq!(value["tools"][0]["strict"], Value::Null);
+    }
+
+    #[test]
+    fn omits_codex_responses_default_reasoning_like_pi() {
+        let model = Model {
+            id: "gpt-5-codex".to_string(),
+            provider: "openai-codex".to_string(),
+            api: "openai-codex-responses".to_string(),
+            display_name: "GPT-5 Codex".to_string(),
+            context_window: 128_000,
+            reasoning: Some(crate::types::ModelReasoning { enabled: true }),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let value =
+            serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
+
+        assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn builds_codex_responses_requested_reasoning_like_pi() {
+        let model = Model {
+            id: "gpt-5-codex".to_string(),
+            provider: "openai-codex".to_string(),
+            api: "openai-codex-responses".to_string(),
+            display_name: "GPT-5 Codex".to_string(),
+            context_window: 128_000,
+            reasoning: Some(crate::types::ModelReasoning { enabled: true }),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([
+                ("reasoning".to_string(), json!("high")),
+                ("reasoningSummary".to_string(), json!("concise")),
+            ]),
+        };
+
+        let value =
+            serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
+
+        assert_eq!(value["reasoning"]["effort"], "high");
+        assert_eq!(value["reasoning"]["summary"], "concise");
     }
 
     #[test]
