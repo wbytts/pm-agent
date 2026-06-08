@@ -196,6 +196,41 @@ fn read_returns_image_content_blocks_like_pi() {
 }
 
 #[test]
+fn read_omits_image_when_inline_limits_cannot_be_met_like_pi() {
+    let workspace = temp_workspace();
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    png.extend_from_slice(&13u32.to_be_bytes());
+    png.extend_from_slice(b"IHDR");
+    png.extend_from_slice(&3000u32.to_be_bytes());
+    png.extend_from_slice(&3000u32.to_be_bytes());
+    png.extend_from_slice(&[8, 2, 0, 0, 0]);
+    png.extend_from_slice(&1u32.to_be_bytes());
+    png.extend_from_slice(b"IDAT");
+    fs::write(workspace.cwd.join("huge.png"), png).expect("image should be written");
+
+    let read = execute_tool(
+        &workspace,
+        CodingToolRequest::ReadFile {
+            path: "huge.png".to_string(),
+            offset: None,
+            limit: None,
+        },
+    )
+    .expect("read image should work");
+
+    assert_eq!(
+        read.output,
+        "Read image file [image/png]\n[Image omitted: could not be resized below the inline image size limit.]"
+    );
+    assert_eq!(
+        read.content,
+        Some(vec![crate::types::CodingContentBlock::Text {
+            text: read.output.clone()
+        }])
+    );
+}
+
+#[test]
 fn read_reports_first_line_exceeds_limit_in_details() {
     let workspace = temp_workspace();
     execute_tool(

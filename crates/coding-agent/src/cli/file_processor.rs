@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::utils::base64::encode_base64;
+use crate::utils::image_dimensions::format_resized_image_dimension_note;
+use crate::utils::image_resize::resize_image;
 use crate::utils::mime::detect_supported_image_mime_type_from_file;
 use crate::utils::paths::{resolve_path, PathInputOptions};
 
@@ -49,6 +51,33 @@ pub fn process_file_arguments(
             let content = fs::read(&absolute_path).map_err(|error| {
                 format!("Could not read file {}: {error}", absolute_path.display())
             })?;
+            if options.auto_resize_images {
+                let Some(resized) = resize_image(&content, mime_type) else {
+                    result.text.push_str(&format!(
+                        "<file name=\"{}\">[Image omitted: could not be resized below the inline image size limit.]</file>\n",
+                        absolute_path.display()
+                    ));
+                    continue;
+                };
+                result.images.push(ContentBlock::Image {
+                    mime_type: resized.mime_type,
+                    data: resized.data,
+                });
+                if let Some(dimension_note) =
+                    format_resized_image_dimension_note(resized.dimensions)
+                {
+                    result.text.push_str(&format!(
+                        "<file name=\"{}\">{dimension_note}</file>\n",
+                        absolute_path.display()
+                    ));
+                } else {
+                    result.text.push_str(&format!(
+                        "<file name=\"{}\"></file>\n",
+                        absolute_path.display()
+                    ));
+                }
+                continue;
+            }
             result.images.push(ContentBlock::Image {
                 mime_type: mime_type.to_string(),
                 data: encode_base64(&content),
@@ -153,6 +182,34 @@ mod tests {
             ContentBlock::Image { mime_type, .. } if mime_type == "image/png"
         ));
         assert!(processed.text.contains("</file>"));
+    }
+
+    #[test]
+    fn auto_resize_omits_image_when_inline_limits_cannot_be_met_like_pi() {
+        let dir = temp_dir();
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&3000u32.to_be_bytes());
+        png.extend_from_slice(&3000u32.to_be_bytes());
+        png.extend_from_slice(&[8, 2, 0, 0, 0]);
+        png.extend_from_slice(&1u32.to_be_bytes());
+        png.extend_from_slice(b"IDAT");
+        fs::write(dir.join("huge.png"), png).expect("file should write");
+
+        let processed = process_file_arguments(
+            &["huge.png".to_string()],
+            ProcessFileOptions {
+                cwd: Some(dir),
+                auto_resize_images: true,
+            },
+        )
+        .expect("files should process");
+
+        assert!(processed.images.is_empty());
+        assert!(processed
+            .text
+            .contains("[Image omitted: could not be resized below the inline image size limit.]"));
     }
 
     #[test]

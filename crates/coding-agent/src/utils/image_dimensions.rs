@@ -4,6 +4,8 @@ pub struct ImageDimensions {
     pub height_px: u32,
 }
 
+pub const DEFAULT_IMAGE_MAX_DIMENSION: u32 = 2000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResizedImageDimensions {
     pub original_width_px: u32,

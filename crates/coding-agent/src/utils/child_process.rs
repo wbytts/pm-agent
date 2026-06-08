@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -56,6 +57,36 @@ pub fn run_extraction_command(command: &str, args: &[&str]) -> io::Result<Option
         "{command}: {}",
         format_spawn_failure(&output)
     )))
+}
+
+pub fn find_binary_recursively(
+    root_dir: impl AsRef<std::path::Path>,
+    binary_file_name: &str,
+) -> Option<PathBuf> {
+    let mut stack = vec![root_dir.as_ref().to_path_buf()];
+    while let Some(current_dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current_dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == binary_file_name)
+            {
+                return Some(path);
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -123,5 +154,31 @@ mod tests {
             .expect("failure");
 
         assert_eq!(failure, "sh: problem");
+    }
+
+    #[test]
+    fn finds_binary_recursively_like_pi_tools_manager() {
+        let root = temp_dir();
+        let nested = root.join("ripgrep-14.1.1").join("bin");
+        std::fs::create_dir_all(&nested).expect("nested dir should create");
+        std::fs::write(nested.join("rg"), "").expect("binary should write");
+        std::fs::write(root.join("fd"), "").expect("root binary should write");
+
+        assert_eq!(
+            find_binary_recursively(&root, "rg"),
+            Some(nested.join("rg"))
+        );
+        assert_eq!(find_binary_recursively(&root, "fd"), Some(root.join("fd")));
+        assert_eq!(find_binary_recursively(&root, "missing"), None);
+    }
+
+    fn temp_dir() -> std::path::PathBuf {
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("pm-agent-child-process-test-{id}"));
+        std::fs::create_dir_all(&dir).expect("dir should create");
+        dir
     }
 }

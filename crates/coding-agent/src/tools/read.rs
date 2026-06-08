@@ -5,7 +5,8 @@ use crate::tools::truncate::{format_size, truncate_head, TruncatedBy, Truncation
 use crate::types::{
     CodingAgentError, CodingAgentResult, CodingContentBlock, CodingToolResult, CodingWorkspace,
 };
-use crate::utils::base64::encode_base64;
+use crate::utils::image_dimensions::format_resized_image_dimension_note;
+use crate::utils::image_resize::resize_image;
 use crate::utils::mime::detect_supported_image_mime_type_from_file;
 use crate::workspace::resolve_read_workspace_path;
 use serde_json::json;
@@ -24,7 +25,22 @@ pub fn read_file(
         let bytes = fs::read(&path).map_err(|error| {
             CodingAgentError::File(format!("读取文件 {} 失败：{error}", path.display()))
         })?;
-        let text = format!("Read image file [{mime_type}]");
+        let Some(resized) = resize_image(&bytes, mime_type) else {
+            let text = format!(
+                "Read image file [{mime_type}]\n[Image omitted: could not be resized below the inline image size limit.]"
+            );
+            return Ok(CodingToolResult {
+                success: true,
+                output: text.clone(),
+                details: None,
+                content: Some(vec![CodingContentBlock::Text { text }]),
+            });
+        };
+        let mut text = format!("Read image file [{}]", resized.mime_type);
+        if let Some(dimension_note) = format_resized_image_dimension_note(resized.dimensions) {
+            text.push('\n');
+            text.push_str(&dimension_note);
+        }
         return Ok(CodingToolResult {
             success: true,
             output: text.clone(),
@@ -32,8 +48,8 @@ pub fn read_file(
             content: Some(vec![
                 CodingContentBlock::Text { text },
                 CodingContentBlock::Image {
-                    data: encode_base64(&bytes),
-                    mime_type: mime_type.to_string(),
+                    data: resized.data,
+                    mime_type: resized.mime_type,
                 },
             ]),
         });
