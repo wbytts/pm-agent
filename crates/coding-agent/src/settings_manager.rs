@@ -187,6 +187,18 @@ impl<S: SettingsStorage> SettingsManager<S> {
         self.save_scope(SettingsScope::Global);
     }
 
+    pub fn get_shell_path(&self) -> Option<String> {
+        self.get_string("shellPath")
+    }
+
+    pub fn get_quiet_startup(&self) -> bool {
+        self.get_bool("quietStartup").unwrap_or(false)
+    }
+
+    pub fn get_shell_command_prefix(&self) -> Option<String> {
+        self.get_string("shellCommandPrefix")
+    }
+
     pub fn get_packages(&self) -> Vec<Value> {
         self.get_array("packages")
     }
@@ -1019,6 +1031,27 @@ mod tests {
         }));
 
         manager.get_http_idle_timeout_ms();
+    }
+
+    #[test]
+    fn shell_command_prefix_loads_from_settings_like_pi() {
+        let manager = SettingsManager::in_memory(json!({
+            "shellCommandPrefix": "shopt -s expand_aliases"
+        }));
+
+        assert_eq!(
+            manager.get_shell_command_prefix().as_deref(),
+            Some("shopt -s expand_aliases")
+        );
+    }
+
+    #[test]
+    fn shell_runtime_getters_match_pi_defaults() {
+        let manager = SettingsManager::in_memory(json!({}));
+
+        assert_eq!(manager.get_shell_path(), None);
+        assert!(!manager.get_quiet_startup());
+        assert_eq!(manager.get_shell_command_prefix(), None);
     }
 
     #[test]
