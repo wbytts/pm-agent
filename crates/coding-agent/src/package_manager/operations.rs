@@ -162,12 +162,7 @@ fn install_git_steps(
     let cwd = cwd.as_ref();
     let target_dir = display_path(git_install_path(agent_dir, cwd, source, scope));
     if Path::new(&target_dir).exists() {
-        return reconcile_existing_git_steps(
-            &target_dir,
-            source,
-            npm_command,
-            npm_command_configured,
-        );
+        return reconcile_existing_git_steps(&target_dir, source);
     }
     let target_parent = Path::new(&target_dir)
         .parent()
@@ -210,12 +205,7 @@ fn install_git_steps(
     steps
 }
 
-fn reconcile_existing_git_steps(
-    target_dir: &str,
-    source: &GitSource,
-    npm_command: &NpmCommandConfig,
-    npm_command_configured: bool,
-) -> Vec<PackageCommandStep> {
+fn reconcile_existing_git_steps(target_dir: &str, source: &GitSource) -> Vec<PackageCommandStep> {
     let target = if let Some(reference) = &source.reference {
         super::git_update::GitUpdateTarget {
             reset_ref: "FETCH_HEAD^{commit}".to_string(),
@@ -228,21 +218,14 @@ fn reconcile_existing_git_steps(
     } else {
         git_update_target(Path::new(target_dir), source)
     };
-    vec![
-        PackageCommandStep {
-            command: "git_ensure_ref".to_string(),
-            args: std::iter::once(target.reset_ref)
-                .chain(std::iter::once("--".to_string()))
-                .chain(target.fetch_args)
-                .collect(),
-            cwd: Some(target_dir.to_string()),
-        },
-        conditional_package_json_step(
-            npm_command,
-            git_dependency_install_args(npm_command_configured),
-            Some(target_dir.to_string()),
-        ),
-    ]
+    vec![PackageCommandStep {
+        command: "git_ensure_ref".to_string(),
+        args: std::iter::once(target.reset_ref)
+            .chain(std::iter::once("--".to_string()))
+            .chain(target.fetch_args)
+            .collect(),
+        cwd: Some(target_dir.to_string()),
+    }]
 }
 
 fn remove_git_steps(
@@ -617,20 +600,18 @@ mod tests {
         );
         let target_path = display_path(&target);
 
-        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].command, "git_ensure_ref");
         assert_eq!(
             plan.steps[0].args,
             vec!["FETCH_HEAD^{commit}", "--", "fetch", "origin", "v2"]
         );
         assert_eq!(plan.steps[0].cwd.as_deref(), Some(target_path.as_str()));
-        assert_eq!(plan.steps[1].command, "run_if_package_json");
-        assert_eq!(plan.steps[1].args, vec!["npm", "install", "--omit=dev"]);
-        assert_eq!(plan.steps[1].cwd.as_deref(), Some(target_path.as_str()));
     }
 
     #[test]
-    fn plans_existing_git_checkout_uses_plain_install_when_npm_command_is_configured_like_pi() {
+    fn plans_existing_git_checkout_skips_dependency_install_when_npm_command_is_configured_like_pi()
+    {
         let agent_dir = temp_dir();
         let target = agent_dir
             .join("git")
@@ -650,14 +631,12 @@ mod tests {
             }),
         );
 
-        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].command, "git_ensure_ref");
         assert_eq!(
             plan.steps[0].args,
             vec!["FETCH_HEAD^{commit}", "--", "fetch", "origin", "v2"]
         );
-        assert_eq!(plan.steps[1].command, "run_if_package_json");
-        assert_eq!(plan.steps[1].args, vec!["npm", "install"]);
     }
 
     #[test]
@@ -689,7 +668,7 @@ mod tests {
         );
         let target_path = display_path(&target);
 
-        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].command, "git_ensure_ref");
         assert_eq!(
             plan.steps[0].args,
@@ -704,9 +683,6 @@ mod tests {
             ]
         );
         assert_eq!(plan.steps[0].cwd.as_deref(), Some(target_path.as_str()));
-        assert_eq!(plan.steps[1].command, "run_if_package_json");
-        assert_eq!(plan.steps[1].args, vec!["npm", "install", "--omit=dev"]);
-        assert_eq!(plan.steps[1].cwd.as_deref(), Some(target_path.as_str()));
     }
 
     fn temp_dir() -> std::path::PathBuf {
