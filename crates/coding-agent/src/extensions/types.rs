@@ -37,9 +37,19 @@ pub struct RegisteredCommand {
     pub source_info: SourceInfo,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExtensionFlagType {
+    #[default]
+    Boolean,
+    String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExtensionFlag {
     pub name: String,
+    #[serde(default, rename = "type")]
+    pub flag_type: ExtensionFlagType,
     pub description: Option<String>,
 }
 

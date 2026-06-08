@@ -63,7 +63,9 @@ mod tools;
 mod types;
 mod workspace;
 
-pub use tools::{default_tools, execute_tool};
+pub use tools::{
+    default_tools, execute_tool, plan_tool_activation, NoToolsMode, ToolActivationPlan,
+};
 pub use types::{
     CodingAgentError, CodingAgentResult, CodingContentBlock, CodingTool, CodingToolEdit,
     CodingToolKind, CodingToolRequest, CodingToolResult, CodingWorkspace,

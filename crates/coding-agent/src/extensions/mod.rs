@@ -19,7 +19,9 @@ pub mod wrapper;
 pub use agent_events::{emit_before_agent_start, BeforeAgentStartEvent, BeforeAgentStartResult};
 pub use commands::{resolve_registered_commands, ResolvedCommand};
 pub use context::{emit_context, ContextEventResult};
-pub use flags::resolve_flags;
+pub use flags::{
+    apply_extension_flag_values, resolve_flags, AppliedExtensionFlagValues, ExtensionFlagDiagnostic,
+};
 pub use input::{emit_input, InputEvent, InputEventResult, InputSource};
 pub use loader::{
     create_extension_runtime, discover_and_load_extensions, load_extension_from_factory,
@@ -38,8 +40,8 @@ pub use tool_results::{emit_tool_result, ExtensionToolResultEvent, ToolResultUpd
 pub use tools::{find_tool_definition, resolve_registered_tools};
 pub use types::{
     Extension, ExtensionApi, ExtensionCommandContext, ExtensionContext, ExtensionError,
-    ExtensionEvent, ExtensionFactory, ExtensionFlag, ExtensionRuntime, LoadExtensionsResult,
-    ProviderConfig, RegisteredCommand, RegisteredTool, ToolDefinition,
+    ExtensionEvent, ExtensionFactory, ExtensionFlag, ExtensionFlagType, ExtensionRuntime,
+    LoadExtensionsResult, ProviderConfig, RegisteredCommand, RegisteredTool, ToolDefinition,
 };
 pub use user_bash::{emit_user_bash, UserBashEvent, UserBashResult};
 pub use wrapper::{wrap_registered_tool, wrap_registered_tools};

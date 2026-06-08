@@ -29,6 +29,47 @@ fn executes_file_tools_inside_workspace() {
 }
 
 #[test]
+fn plans_initial_active_and_allowed_tools_like_pi_sdk() {
+    assert_eq!(
+        plan_tool_activation(None, None),
+        ToolActivationPlan {
+            initial_active_tool_names: vec![
+                "read".to_string(),
+                "bash".to_string(),
+                "edit".to_string(),
+                "write".to_string(),
+            ],
+            allowed_tool_names: None,
+        }
+    );
+
+    assert_eq!(
+        plan_tool_activation(None, Some(NoToolsMode::All)),
+        ToolActivationPlan {
+            initial_active_tool_names: Vec::new(),
+            allowed_tool_names: Some(Vec::new()),
+        }
+    );
+
+    assert_eq!(
+        plan_tool_activation(None, Some(NoToolsMode::Builtin)),
+        ToolActivationPlan {
+            initial_active_tool_names: Vec::new(),
+            allowed_tool_names: None,
+        }
+    );
+
+    let explicit = vec!["read".to_string(), "grep".to_string()];
+    assert_eq!(
+        plan_tool_activation(Some(explicit.clone()), Some(NoToolsMode::All)),
+        ToolActivationPlan {
+            initial_active_tool_names: explicit.clone(),
+            allowed_tool_names: Some(explicit),
+        }
+    );
+}
+
+#[test]
 fn rejects_parent_directory_paths() {
     let workspace = temp_workspace();
     let error = execute_tool(

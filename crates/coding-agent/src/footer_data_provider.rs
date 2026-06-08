@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::exec::{exec_command, ExecOptions};
 
@@ -16,9 +17,32 @@ pub struct FooterDataProvider {
     extension_statuses: BTreeMap<String, String>,
     cached_branch: Option<Option<String>>,
     git_paths: Option<GitPaths>,
-    branch_change_callbacks: Vec<Box<dyn Fn() + Send + Sync>>,
+    branch_change_callbacks: Arc<Mutex<BTreeMap<u64, BranchChangeCallback>>>,
+    next_branch_callback_id: u64,
     available_provider_count: usize,
     disposed: bool,
+}
+
+type BranchChangeCallback = Arc<dyn Fn() + Send + Sync>;
+
+pub struct BranchChangeSubscription {
+    callbacks: Weak<Mutex<BTreeMap<u64, BranchChangeCallback>>>,
+    id: u64,
+}
+
+impl BranchChangeSubscription {
+    pub fn unsubscribe(self) {}
+}
+
+impl Drop for BranchChangeSubscription {
+    fn drop(&mut self) {
+        if let Some(callbacks) = self.callbacks.upgrade() {
+            callbacks
+                .lock()
+                .expect("footer branch callbacks lock should not be poisoned")
+                .remove(&self.id);
+        }
+    }
 }
 
 impl FooterDataProvider {
@@ -30,7 +54,8 @@ impl FooterDataProvider {
             extension_statuses: BTreeMap::new(),
             cached_branch: None,
             git_paths,
-            branch_change_callbacks: Vec::new(),
+            branch_change_callbacks: Arc::new(Mutex::new(BTreeMap::new())),
+            next_branch_callback_id: 0,
             available_provider_count: 0,
             disposed: false,
         }
@@ -68,11 +93,20 @@ impl FooterDataProvider {
         self.available_provider_count = count;
     }
 
-    pub fn on_branch_change<F>(&mut self, callback: F)
+    pub fn on_branch_change<F>(&mut self, callback: F) -> BranchChangeSubscription
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.branch_change_callbacks.push(Box::new(callback));
+        let id = self.next_branch_callback_id;
+        self.next_branch_callback_id += 1;
+        self.branch_change_callbacks
+            .lock()
+            .expect("footer branch callbacks lock should not be poisoned")
+            .insert(id, Arc::new(callback));
+        BranchChangeSubscription {
+            callbacks: Arc::downgrade(&self.branch_change_callbacks),
+            id,
+        }
     }
 
     pub fn set_cwd(&mut self, cwd: impl Into<PathBuf>) {
@@ -105,14 +139,24 @@ impl FooterDataProvider {
 
     pub fn dispose(&mut self) {
         self.disposed = true;
-        self.branch_change_callbacks.clear();
+        self.branch_change_callbacks
+            .lock()
+            .expect("footer branch callbacks lock should not be poisoned")
+            .clear();
     }
 
     fn notify_branch_change(&self) {
         if self.disposed {
             return;
         }
-        for callback in &self.branch_change_callbacks {
+        let callbacks: Vec<_> = self
+            .branch_change_callbacks
+            .lock()
+            .expect("footer branch callbacks lock should not be poisoned")
+            .values()
+            .cloned()
+            .collect();
+        for callback in callbacks {
             callback();
         }
     }
@@ -293,7 +337,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_callback = calls.clone();
-        provider.on_branch_change(move || {
+        let _subscription = provider.on_branch_change(move || {
             calls_for_callback.fetch_add(1, Ordering::SeqCst);
         });
         provider.set_cwd(repo.join("nested"));
@@ -316,7 +360,7 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_callback = calls.clone();
-        provider.on_branch_change(move || {
+        let _subscription = provider.on_branch_change(move || {
             calls_for_callback.fetch_add(1, Ordering::SeqCst);
         });
 
@@ -326,6 +370,26 @@ mod tests {
         fs::write(&head, "ref: refs/heads/dev\n").expect("head changed");
         provider.refresh_git_branch();
         assert_eq!(provider.git_branch().as_deref(), Some("dev"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        fs::remove_dir_all(repo).ok();
+    }
+
+    #[test]
+    fn branch_change_subscription_unsubscribes_like_pi() {
+        let repo = test_dir("unsubscribe");
+        let mut provider = FooterDataProvider::new(&repo);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_callback = calls.clone();
+        let subscription = provider.on_branch_change(move || {
+            calls_for_callback.fetch_add(1, Ordering::SeqCst);
+        });
+
+        provider.set_cwd(repo.join("nested"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        drop(subscription);
+        provider.set_cwd(repo.join("other"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         fs::remove_dir_all(repo).ok();
     }

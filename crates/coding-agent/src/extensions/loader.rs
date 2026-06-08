@@ -172,6 +172,7 @@ mod tests {
         fn load(&self, api: &mut crate::extensions::types::ExtensionApi<'_>) -> Result<(), String> {
             api.register_flag(crate::extensions::types::ExtensionFlag {
                 name: "demo-flag".to_string(),
+                flag_type: Default::default(),
                 description: Some(self.description.to_string()),
             })
         }

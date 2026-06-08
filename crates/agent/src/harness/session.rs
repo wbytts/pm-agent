@@ -579,11 +579,20 @@ impl JsonlSessionStorage {
                 ),
             )
         })?;
-        let mut metadata = parse_header(header_line, &file_path)?;
+        let header_value = parse_header_value(header_line, &file_path)?;
+        let session_version = session_header_version(&header_value);
+        validate_session_version(session_version, &file_path)?;
+        let mut metadata = metadata_from_header_value(&header_value, &file_path)?;
         metadata.path = Some(file_path.to_string_lossy().to_string());
-        let entries = lines
+        let mut entry_values = lines
             .enumerate()
-            .map(|(index, line)| parse_entry(line, &file_path, index + 2))
+            .map(|(index, line)| parse_entry_value(line, &file_path, index + 2))
+            .collect::<SessionResult<Vec<_>>>()?;
+        migrate_session_entry_values(session_version, &mut entry_values);
+        let entries = entry_values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| parse_entry_value_as_entry(value, &file_path, index + 2))
             .collect::<SessionResult<Vec<_>>>()?;
 
         Ok(Self {
@@ -1141,6 +1150,13 @@ fn append_jsonl_entry(path: &Path, entry: &SessionTreeEntry) -> SessionResult<()
 }
 
 fn parse_header(line: &str, path: &Path) -> SessionResult<SessionMetadata> {
+    let value = parse_header_value(line, path)?;
+    let version = session_header_version(&value);
+    validate_session_version(version, path)?;
+    metadata_from_header_value(&value, path)
+}
+
+fn parse_header_value(line: &str, path: &Path) -> SessionResult<serde_json::Value> {
     let value = serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
         SessionError::new(
             SessionErrorCode::InvalidSession,
@@ -1159,7 +1175,18 @@ fn parse_header(line: &str, path: &Path) -> SessionResult<SessionMetadata> {
             ),
         ));
     }
-    if value.get("version").and_then(serde_json::Value::as_u64) != Some(3) {
+    Ok(value)
+}
+
+fn session_header_version(value: &serde_json::Value) -> u64 {
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1)
+}
+
+fn validate_session_version(version: u64, path: &Path) -> SessionResult<()> {
+    if !(1..=3).contains(&version) {
         return Err(SessionError::new(
             SessionErrorCode::InvalidSession,
             format!(
@@ -1168,6 +1195,13 @@ fn parse_header(line: &str, path: &Path) -> SessionResult<SessionMetadata> {
             ),
         ));
     }
+    Ok(())
+}
+
+fn metadata_from_header_value(
+    value: &serde_json::Value,
+    path: &Path,
+) -> SessionResult<SessionMetadata> {
     let id = required_string(&value, "id", path)?;
     let created_at = required_string(&value, "timestamp", path)?;
     let cwd = required_string(&value, "cwd", path)?;
@@ -1202,8 +1236,12 @@ fn required_string(value: &serde_json::Value, key: &str, path: &Path) -> Session
         })
 }
 
-fn parse_entry(line: &str, path: &Path, line_number: usize) -> SessionResult<SessionTreeEntry> {
-    serde_json::from_str::<SessionTreeEntry>(line).map_err(|error| {
+fn parse_entry_value(
+    line: &str,
+    path: &Path,
+    line_number: usize,
+) -> SessionResult<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
         SessionError::new(
             SessionErrorCode::InvalidEntry,
             format!(
@@ -1212,6 +1250,106 @@ fn parse_entry(line: &str, path: &Path, line_number: usize) -> SessionResult<Ses
             ),
         )
     })
+}
+
+fn parse_entry_value_as_entry(
+    value: serde_json::Value,
+    path: &Path,
+    line_number: usize,
+) -> SessionResult<SessionTreeEntry> {
+    serde_json::from_value::<SessionTreeEntry>(value).map_err(|error| {
+        SessionError::new(
+            SessionErrorCode::InvalidEntry,
+            format!(
+                "Invalid JSONL session file {}: line {line_number} is invalid: {error}",
+                path.display()
+            ),
+        )
+    })
+}
+
+fn migrate_session_entry_values(version: u64, entries: &mut [serde_json::Value]) {
+    if version < 2 {
+        migrate_session_v1_to_v2(entries);
+    }
+    if version < 3 {
+        migrate_session_v2_to_v3(entries);
+    }
+}
+
+fn migrate_session_v1_to_v2(entries: &mut [serde_json::Value]) {
+    let mut ids = BTreeMap::<usize, String>::new();
+    let mut prev_id: Option<String> = None;
+
+    for index in 0..entries.len() {
+        let id = generate_entry_id(|candidate| ids.values().any(|existing| existing == candidate));
+        if let Some(object) = entries[index].as_object_mut() {
+            object.insert("id".to_string(), serde_json::Value::String(id.clone()));
+            object.insert(
+                "parentId".to_string(),
+                prev_id
+                    .clone()
+                    .map(serde_json::Value::String)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+            if object.get("type").and_then(serde_json::Value::as_str) == Some("compaction") {
+                if let Some(first_kept_index) = object
+                    .remove("firstKeptEntryIndex")
+                    .and_then(|value| value.as_u64())
+                    .and_then(|value| usize::try_from(value).ok())
+                {
+                    let entry_index = first_kept_index.saturating_sub(1);
+                    if let Some(first_kept_id) = ids.get(&entry_index) {
+                        object.insert(
+                            "firstKeptEntryId".to_string(),
+                            serde_json::Value::String(first_kept_id.clone()),
+                        );
+                    }
+                }
+            }
+        }
+        ids.insert(index, id.clone());
+        prev_id = Some(id);
+    }
+}
+
+fn migrate_session_v2_to_v3(entries: &mut [serde_json::Value]) {
+    for entry in entries {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        if object.get("type").and_then(serde_json::Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(message) = object
+            .get_mut("message")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+        if message.get("role").and_then(serde_json::Value::as_str) == Some("hookMessage") {
+            let content = message
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let details = message.get("details").cloned();
+            object.insert(
+                "type".to_string(),
+                serde_json::Value::String("custom_message".to_string()),
+            );
+            object.insert(
+                "customType".to_string(),
+                serde_json::Value::String("hookMessage".to_string()),
+            );
+            object.insert("content".to_string(), serde_json::Value::String(content));
+            object.insert("display".to_string(), serde_json::Value::Bool(true));
+            if let Some(details) = details {
+                object.insert("details".to_string(), details);
+            }
+            object.remove("message");
+        }
+    }
 }
 
 fn default_metadata() -> SessionMetadata {
@@ -1481,6 +1619,90 @@ mod tests {
             }),
             Err(error) if error.code == SessionErrorCode::NotFound
         ));
+    }
+
+    #[test]
+    fn jsonl_session_open_accepts_v2_sessions_like_pi_migration() {
+        let path = temp_dir().join("v2-session.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":2,"id":"session-v2","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/pm-agent"}"#,
+                r#"{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"User","content":"legacy user"}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .expect("v2 fixture should write");
+
+        let storage = JsonlSessionStorage::open(&path).expect("v2 session should migrate");
+        let entries = storage.entries();
+
+        assert_eq!(storage.metadata().id, "session-v2");
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0],
+            SessionTreeEntry::Message { message, .. }
+                if message.role == MessageRole::User && message.content == "legacy user"
+        ));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn jsonl_session_open_converts_legacy_hook_messages_to_custom_messages() {
+        let path = temp_dir().join("v2-hook-session.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":2,"id":"session-v2-hook","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/pm-agent"}"#,
+                r#"{"type":"message","id":"entry-1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"hookMessage","content":"legacy hook"}}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .expect("v2 hook fixture should write");
+
+        let storage = JsonlSessionStorage::open(&path).expect("v2 hook message should migrate");
+        let entries = storage.entries();
+
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(
+            &entries[0],
+            SessionTreeEntry::CustomMessage { custom_type, content, display, .. }
+                if custom_type == "hookMessage" && content == "legacy hook" && *display
+        ));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn jsonl_session_open_migrates_v1_ids_parent_chain_and_compaction_index_like_pi() {
+        let path = temp_dir().join("v1-session.jsonl");
+        fs::write(
+            &path,
+            [
+                r#"{"type":"session","version":1,"id":"session-v1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/pm-agent"}"#,
+                r#"{"type":"message","timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"User","content":"first"}}"#,
+                r#"{"type":"message","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"Assistant","content":"second"}}"#,
+                r#"{"type":"compaction","timestamp":"2026-01-01T00:00:03.000Z","summary":"summary","firstKeptEntryIndex":1,"tokensBefore":42,"fromHook":false}"#,
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .expect("v1 fixture should write");
+
+        let storage = JsonlSessionStorage::open(&path).expect("v1 session should migrate");
+        let entries = storage.entries();
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].parent_id(), None);
+        assert_eq!(entries[1].parent_id(), Some(entries[0].id()));
+        assert_eq!(entries[2].parent_id(), Some(entries[1].id()));
+        assert!(matches!(
+            &entries[2],
+            SessionTreeEntry::Compaction { first_kept_entry_id, .. }
+                if first_kept_entry_id == entries[0].id()
+        ));
+        fs::remove_file(path).ok();
     }
 
     fn temp_dir() -> PathBuf {

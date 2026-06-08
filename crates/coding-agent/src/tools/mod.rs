@@ -12,7 +12,9 @@ mod registry;
 pub(crate) mod truncate;
 mod write;
 
-pub use registry::{default_tools, execute_tool};
+pub use registry::{
+    default_tools, execute_tool, plan_tool_activation, NoToolsMode, ToolActivationPlan,
+};
 
 #[cfg(test)]
 mod tests;

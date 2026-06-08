@@ -817,6 +817,7 @@ mod tests {
             })?;
             api.register_flag(crate::extensions::ExtensionFlag {
                 name: "demo-flag".to_string(),
+                flag_type: Default::default(),
                 description: Some("Demo flag".to_string()),
             })?;
             Ok(())

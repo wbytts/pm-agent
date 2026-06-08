@@ -247,9 +247,9 @@ fn slice_args(expression: &str, args: &[String]) -> Option<String> {
     let parts = expression.split(':').collect::<Vec<_>>();
     if parts.is_empty()
         || parts.len() > 2
-        || parts
-            .iter()
-            .any(|part| part.is_empty() || !part.chars().all(|character| character.is_ascii_digit()))
+        || parts.iter().any(|part| {
+            part.is_empty() || !part.chars().all(|character| character.is_ascii_digit())
+        })
     {
         return None;
     }
@@ -371,10 +371,7 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0].name, "review");
-        assert_eq!(
-            templates[0].description.as_deref(),
-            Some("Review symlink")
-        );
+        assert_eq!(templates[0].description.as_deref(), Some("Review symlink"));
     }
 
     #[test]
@@ -389,7 +386,10 @@ mod tests {
         let (templates, diagnostics) = load_prompt_templates([&dir]);
         assert!(diagnostics.is_empty());
         assert_eq!(templates.len(), 1);
-        assert_eq!(templates[0].argument_hint.as_deref(), Some("<file> <focus>"));
+        assert_eq!(
+            templates[0].argument_hint.as_deref(),
+            Some("<file> <focus>")
+        );
     }
 
     #[test]

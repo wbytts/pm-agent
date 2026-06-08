@@ -11,6 +11,18 @@ use crate::types::{
 };
 use crate::workspace::validate_workspace;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoToolsMode {
+    All,
+    Builtin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolActivationPlan {
+    pub initial_active_tool_names: Vec<String>,
+    pub allowed_tool_names: Option<Vec<String>>,
+}
+
 pub fn default_tools() -> Vec<CodingTool> {
     vec![
         CodingTool {
@@ -49,6 +61,32 @@ pub fn default_tools() -> Vec<CodingTool> {
             description: "搜索工作区文件内容".to_string(),
         },
     ]
+}
+
+pub fn plan_tool_activation(
+    explicit_tools: Option<Vec<String>>,
+    no_tools: Option<NoToolsMode>,
+) -> ToolActivationPlan {
+    if let Some(explicit_tools) = explicit_tools {
+        return ToolActivationPlan {
+            initial_active_tool_names: explicit_tools.clone(),
+            allowed_tool_names: Some(explicit_tools),
+        };
+    }
+
+    let initial_active_tool_names = if no_tools.is_some() {
+        Vec::new()
+    } else {
+        ["read", "bash", "edit", "write"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+
+    ToolActivationPlan {
+        initial_active_tool_names,
+        allowed_tool_names: matches!(no_tools, Some(NoToolsMode::All)).then(Vec::new),
+    }
 }
 
 pub fn execute_tool(
