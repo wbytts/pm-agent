@@ -257,8 +257,8 @@ fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
 
 fn glob_match(value: &str, pattern: &str) -> bool {
     glob_match_chars(
-        &value.to_lowercase().chars().collect::<Vec<_>>(),
-        &pattern.to_lowercase().chars().collect::<Vec<_>>(),
+        &value.chars().collect::<Vec<_>>(),
+        &pattern.chars().collect::<Vec<_>>(),
     )
 }
 
@@ -386,5 +386,16 @@ mod tests {
         let negated = apply_patterns(&paths, &["nested/[!b].*".to_string()], &base);
         assert!(!negated.contains(&base.join("nested").join("b.md")));
         assert!(negated.contains(&base.join("nested").join("c.txt")));
+    }
+
+    #[test]
+    fn pattern_matching_is_case_sensitive_like_pi_minimatch_defaults() {
+        let base = PathBuf::from("/repo");
+        let paths = vec![base.join("a.md"), base.join("A.md")];
+
+        let enabled = apply_patterns(&paths, &["A.md".to_string()], &base);
+
+        assert!(!enabled.contains(&base.join("a.md")));
+        assert!(enabled.contains(&base.join("A.md")));
     }
 }
