@@ -1,7 +1,10 @@
 use super::types::PackageCommandStep;
 use crate::exec::{exec_command, ExecOptions};
+use crate::utils::paths::{cloud_sync_ignore_commands, CloudSyncIgnoreCommand};
 use std::fs;
+use std::io;
 use std::path::Path;
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandExecution {
@@ -282,8 +285,24 @@ fn ensure_dir(path: impl AsRef<Path>) -> Result<(), String> {
 }
 
 fn ensure_npm_project(path: impl AsRef<Path>) -> Result<(), String> {
+    ensure_npm_project_with_cloud_sync_marker(
+        path,
+        |path| cloud_sync_ignore_commands(path),
+        run_cloud_sync_ignore_command,
+    )
+}
+
+fn ensure_npm_project_with_cloud_sync_marker(
+    path: impl AsRef<Path>,
+    commands_for_path: impl Fn(&Path) -> Vec<CloudSyncIgnoreCommand>,
+    mut run_command: impl FnMut(&CloudSyncIgnoreCommand) -> io::Result<()>,
+) -> Result<(), String> {
     let path = path.as_ref();
     fs::create_dir_all(path).map_err(|error| format!("创建 npm 安装目录失败：{error}"))?;
+    for command in commands_for_path(path) {
+        // pi 对云同步忽略标记采用 best-effort：xattr/setfattr 失败不阻断安装。
+        let _ = run_command(&command);
+    }
     let package_json = path.join("package.json");
     if !package_json.exists() {
         fs::write(
@@ -293,6 +312,19 @@ fn ensure_npm_project(path: impl AsRef<Path>) -> Result<(), String> {
         .map_err(|error| format!("写入 npm package.json 失败：{error}"))?;
     }
     ensure_gitignore(path, "写入 npm .gitignore 失败")?;
+    Ok(())
+}
+
+fn run_cloud_sync_ignore_command(command: &CloudSyncIgnoreCommand) -> io::Result<()> {
+    let status = Command::new(&command.program)
+        .args(&command.args)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("{} exited with status {status}", command.program),
+        ));
+    }
     Ok(())
 }
 
@@ -384,6 +416,30 @@ mod tests {
             fs::read_to_string(dir.join("package.json")).expect("package.json should read"),
             "{\n  \"name\": \"pi-extensions\",\n  \"private\": true\n}\n"
         );
+        assert!(dir.join(".gitignore").exists());
+    }
+
+    #[test]
+    fn ensure_npm_project_marks_cloud_sync_ignored_like_pi_without_failing_on_command_errors() {
+        let dir = temp_dir().join("npm-root");
+        let mut commands = Vec::new();
+        ensure_npm_project_with_cloud_sync_marker(
+            &dir,
+            |path| {
+                vec![CloudSyncIgnoreCommand {
+                    program: "missing-cloud-sync-marker".to_string(),
+                    args: vec![path.to_string_lossy().to_string()],
+                }]
+            },
+            |command| {
+                commands.push(command.clone());
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "boom"))
+            },
+        )
+        .expect("cloud sync marker errors should be ignored");
+
+        assert_eq!(commands.len(), 1);
+        assert!(dir.join("package.json").exists());
         assert!(dir.join(".gitignore").exists());
     }
 
