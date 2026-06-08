@@ -10,7 +10,7 @@ mod types;
 pub use merge::deep_merge_settings;
 pub use migration::{
     migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_keybindings_config_file,
-    migrate_settings, migrate_tools_to_bin,
+    migrate_sessions_from_agent_root, migrate_settings, migrate_tools_to_bin,
 };
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
@@ -799,6 +799,58 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).expect("keybindings should remain"),
             content
+        );
+    }
+
+    #[test]
+    fn migrates_root_session_jsonl_files_to_encoded_session_dir_like_pi() {
+        let dir = temp_dir("root-sessions");
+        let session_file = dir.join("session.jsonl");
+        std::fs::write(
+            &session_file,
+            r#"{"type":"session","cwd":"/tmp/my:project"}"#.to_string() + "\n{}\n",
+        )
+        .expect("session should be written");
+        std::fs::write(dir.join("ignore.txt"), "ignored").expect("ignored file should be written");
+
+        assert_eq!(
+            migrate_sessions_from_agent_root(&dir).expect("migration should succeed"),
+            1
+        );
+
+        assert!(!session_file.exists());
+        assert!(dir
+            .join("sessions")
+            .join("--tmp-my-project--")
+            .join("session.jsonl")
+            .exists());
+        assert!(dir.join("ignore.txt").exists());
+    }
+
+    #[test]
+    fn skips_root_session_when_target_exists_like_pi() {
+        let dir = temp_dir("root-sessions-existing");
+        let session_file = dir.join("session.jsonl");
+        let target_dir = dir.join("sessions").join("--tmp-project--");
+        std::fs::create_dir_all(&target_dir).expect("target dir should be created");
+        std::fs::write(
+            &session_file,
+            r#"{"type":"session","cwd":"/tmp/project"}"#.to_string() + "\n{}\n",
+        )
+        .expect("session should be written");
+        std::fs::write(target_dir.join("session.jsonl"), "existing")
+            .expect("existing target should be written");
+
+        assert_eq!(
+            migrate_sessions_from_agent_root(&dir).expect("migration should succeed"),
+            0
+        );
+
+        assert!(session_file.exists());
+        assert_eq!(
+            std::fs::read_to_string(target_dir.join("session.jsonl"))
+                .expect("existing target should remain"),
+            "existing"
         );
     }
 

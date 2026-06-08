@@ -184,6 +184,50 @@ pub fn migrate_keybindings_config_file(path: impl AsRef<Path>) -> Result<bool, S
     Ok(true)
 }
 
+pub fn migrate_sessions_from_agent_root(agent_dir: impl AsRef<Path>) -> Result<usize, String> {
+    let agent_dir = agent_dir.as_ref();
+    if !agent_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut migrated = 0;
+    let entries = fs::read_dir(agent_dir)
+        .map_err(|error| format!("读取 agent 目录 {} 失败：{error}", agent_dir.display()))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("读取 agent 目录项 {} 失败：{error}", agent_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+
+        let Some(cwd) = session_cwd_from_first_line(&path)? else {
+            continue;
+        };
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        let target_dir = agent_dir.join("sessions").join(encoded_session_dir(&cwd));
+        let target_path = target_dir.join(file_name);
+        if target_path.exists() {
+            continue;
+        }
+
+        fs::create_dir_all(&target_dir)
+            .map_err(|error| format!("创建 session 目录 {} 失败：{error}", target_dir.display()))?;
+        fs::rename(&path, &target_path).map_err(|error| {
+            format!(
+                "迁移 session 文件失败：{} -> {}：{error}",
+                path.display(),
+                target_path.display()
+            )
+        })?;
+        migrated += 1;
+    }
+
+    Ok(migrated)
+}
+
 fn migrate_legacy_skills(object: &mut Map<String, Value>) {
     let Some(skills) = object.get("skills") else {
         return;
@@ -258,6 +302,33 @@ fn set_owner_only_permissions(path: &Path) -> Result<(), String> {
         let _ = path;
     }
     Ok(())
+}
+
+fn session_cwd_from_first_line(path: &Path) -> Result<Option<String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("读取 session 文件 {} 失败：{error}", path.display()))?;
+    let Some(first_line) = content
+        .lines()
+        .next()
+        .filter(|line| !line.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(first_line)
+        .map_err(|error| format!("解析 session 文件头 {} 失败：{error}", path.display()))?;
+    if value.get("type").and_then(Value::as_str) != Some("session") {
+        return Ok(None);
+    }
+    Ok(value
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(ToString::to_string))
+}
+
+fn encoded_session_dir(cwd: &str) -> String {
+    let trimmed = cwd.trim_start_matches(['/', '\\']);
+    let safe = trimmed.replace(['/', '\\', ':'], "-");
+    format!("--{safe}--")
 }
 
 pub(super) fn object_mut(value: &mut Value) -> &mut Map<String, Value> {
