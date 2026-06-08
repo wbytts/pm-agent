@@ -117,6 +117,31 @@ impl SessionManager<JsonlSessionStorage> {
 
     pub fn open(path: impl Into<PathBuf>, session_dir: Option<PathBuf>) -> Result<Self, String> {
         let session_file = path.into();
+        if !session_file.exists() {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let session_dir = session_dir.unwrap_or_else(|| {
+                session_file
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| default_session_dir(&cwd))
+            });
+            fs::create_dir_all(&session_dir)
+                .map_err(|error| format!("创建 session 目录失败：{error}"))?;
+            let storage = JsonlSessionStorage::create(
+                &session_file,
+                cwd.to_string_lossy().to_string(),
+                session_id(),
+                None,
+            )
+            .map_err(|error| error.to_string())?;
+            return Ok(Self {
+                storage,
+                cwd,
+                session_dir,
+                session_file: Some(session_file),
+                persist: true,
+            });
+        }
         let storage =
             JsonlSessionStorage::open(&session_file).map_err(|error| error.to_string())?;
         let cwd = storage
@@ -551,6 +576,17 @@ mod tests {
 
         assert_eq!(continued.session_file(), original.session_file());
         assert_eq!(continued.cwd(), Path::new("/tmp/current"));
+    }
+
+    #[test]
+    fn open_missing_explicit_path_starts_new_session_like_pi() {
+        let dir = temp_dir();
+        let explicit_path = dir.join("explicit.jsonl");
+
+        let manager = SessionManager::open(&explicit_path, None).expect("session should open");
+
+        assert_eq!(manager.session_file(), Some(explicit_path.as_path()));
+        assert_eq!(manager.session_dir(), dir.as_path());
     }
 
     fn temp_dir() -> PathBuf {
