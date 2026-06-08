@@ -5,6 +5,7 @@ pub mod changelog;
 pub mod child_process;
 pub mod clipboard;
 pub mod clipboard_image;
+pub mod clipboard_native;
 pub mod exif_orientation;
 pub mod frontmatter;
 pub mod fs_watch;
@@ -49,6 +50,10 @@ pub use clipboard_image::{
     select_preferred_image_mime_type, write_clipboard_image_for_editor_insert,
     write_clipboard_image_for_editor_insert_auto, ClipboardImage, ClipboardImageCommandOutput,
     ClipboardImageReadBackend, ClipboardImageRunner, SystemClipboardImageRunner,
+};
+pub use clipboard_native::{
+    load_clipboard_native_from_roots, should_try_clipboard_native, ClipboardNativeEnvironment,
+    ClipboardNativePlatform,
 };
 pub use exif_orientation::get_exif_orientation;
 pub use frontmatter::{parse_frontmatter, strip_frontmatter, ParsedFrontmatter};
