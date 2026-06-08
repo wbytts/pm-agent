@@ -426,6 +426,7 @@ fn build_codex_responses_payload(request: &StreamRequest) -> OpenAiResponsesPayl
         parallel_tool_calls: Some(true),
         tools: convert_codex_responses_tools(&request.tools),
         reasoning: codex_responses_reasoning(request),
+        max_output_tokens: None,
         ..build_responses_payload(request, Some(false))
     }
 }
@@ -1151,6 +1152,34 @@ mod tests {
             .expect("input")
             .iter()
             .all(|item| item["role"] != "system"));
+    }
+
+    #[test]
+    fn omits_codex_responses_max_output_tokens_like_pi() {
+        let model = Model {
+            id: "gpt-5-codex".to_string(),
+            provider: "openai-codex".to_string(),
+            api: "openai-codex-responses".to_string(),
+            display_name: "GPT-5 Codex".to_string(),
+            context_window: 128_000,
+            max_tokens: Some(2048),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let value =
+            serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
+
+        assert!(value.get("max_output_tokens").is_none());
     }
 
     #[test]
