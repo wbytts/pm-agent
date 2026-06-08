@@ -583,7 +583,8 @@ fn matches_printable(data: &str, key: &str, modifier: u8) -> bool {
     if modifier == MOD_ALT {
         return data == format!("\x1b{key}");
     }
-    matches_kitty(data, ch as i32, modifier) || matches_modify_other_keys(data, ch as i32, modifier)
+    matches_kitty(data, ch as i32, modifier)
+        || matches_printable_modify_other_keys(data, ch as i32, modifier)
 }
 
 fn parse_legacy_key(data: &str) -> Option<String> {
@@ -868,6 +869,24 @@ fn matches_modify_other_keys(data: &str, expected_codepoint: i32, expected_modif
         return false;
     };
     parsed.codepoint == expected_codepoint && parsed.modifier == expected_modifier
+}
+
+fn matches_printable_modify_other_keys(
+    data: &str,
+    expected_codepoint: i32,
+    expected_modifier: u8,
+) -> bool {
+    if expected_modifier == 0 {
+        return false;
+    }
+    let Some(parsed) = parse_modify_other_keys_sequence(data) else {
+        return false;
+    };
+    if parsed.modifier != expected_modifier {
+        return false;
+    }
+    normalize_codepoint(parsed.codepoint, parsed.modifier)
+        == normalize_codepoint(expected_codepoint, expected_modifier)
 }
 
 fn is_windows_terminal_session() -> bool {
@@ -1219,6 +1238,12 @@ mod tests {
         assert_eq!(parse_key("\x1b[27;5;99~"), Some("ctrl+c".to_string()));
         assert_eq!(parse_key("\x1b[27;6;65~"), Some("shift+ctrl+a".to_string()));
         assert_eq!(parse_key("\x1b[27;3;13~"), Some("alt+enter".to_string()));
+    }
+
+    #[test]
+    fn matches_shifted_modify_other_keys_printables_like_pi() {
+        assert!(matches_key("\x1b[27;2;65~", "shift+a"));
+        assert!(matches_key("\x1b[27;6;65~", "shift+ctrl+a"));
     }
 
     #[test]
