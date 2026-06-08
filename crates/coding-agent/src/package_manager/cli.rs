@@ -454,6 +454,7 @@ pub fn self_update_command_from_context(
     is_self_update_path_writable: bool,
     case_insensitive: bool,
 ) -> Option<SelfUpdateCommand> {
+    let npm_command = npm_command.filter(|command| !command.is_empty());
     let inferred_npm_install = if method == InstallMethod::Npm && npm_command.is_none() {
         package_dir_candidates.iter().find_map(|package_dir| {
             infer_npm_global_install_from_package_dir(package_dir, case_insensitive)
@@ -1820,6 +1821,20 @@ mod tests {
                 "npm --registry https://registry.example install -g --ignore-scripts pi"
                     .to_string()
             )
+        );
+        assert_eq!(
+            self_update_command_from_context(
+                InstallMethod::Npm,
+                "pi",
+                "pi",
+                Some(Vec::new()),
+                &["/usr/local/lib/node_modules/pi".to_string()],
+                &[],
+                true,
+                false,
+            )
+            .map(|command| command.display),
+            Some("npm --prefix /usr/local install -g --ignore-scripts pi".to_string())
         );
         assert_eq!(
             self_update_command_from_context(
