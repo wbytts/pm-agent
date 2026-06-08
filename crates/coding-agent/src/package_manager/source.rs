@@ -74,6 +74,18 @@ pub fn git_install_root(
     }
 }
 
+pub fn git_storage_root(
+    agent_dir: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    scope: SourceScope,
+) -> Option<PathBuf> {
+    match scope {
+        SourceScope::Temporary => None,
+        SourceScope::Project => Some(cwd.as_ref().join(CONFIG_DIR_NAME).join("git")),
+        SourceScope::User => Some(agent_dir.as_ref().join("git")),
+    }
+}
+
 pub fn installed_path_for_source(
     agent_dir: impl AsRef<Path>,
     cwd: impl AsRef<Path>,

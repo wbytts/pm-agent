@@ -1,5 +1,7 @@
 use super::git_update::git_update_target;
-use super::source::{git_install_path, git_install_root, parse_source, temp_package_dir};
+use super::source::{
+    git_install_path, git_install_root, git_storage_root, parse_source, temp_package_dir,
+};
 use super::types::{
     NpmCommandConfig, NpmSource, PackageCommandStep, PackageOperationPlan, ParsedSource,
     ProgressAction, SourceScope,
@@ -237,10 +239,8 @@ fn remove_git_steps(
     let mut args = vec![display_path(git_install_path(
         &agent_dir, &cwd, source, scope,
     ))];
-    if scope != SourceScope::Temporary {
-        args.push(display_path(git_install_root(
-            agent_dir, cwd, source, scope,
-        )));
+    if let Some(root) = git_storage_root(agent_dir, cwd, scope) {
+        args.push(display_path(root));
     }
     vec![PackageCommandStep {
         command: "remove_dir".to_string(),
@@ -559,6 +559,24 @@ mod tests {
         assert_eq!(plan.steps[3].args, vec!["checkout", "main"]);
         assert_eq!(plan.steps[4].command, "run_if_package_json");
         assert_eq!(plan.steps[4].args, vec!["npm", "install", "--omit=dev"]);
+    }
+
+    #[test]
+    fn plans_git_remove_prunes_to_git_root_like_pi() {
+        let plan = plan_remove(
+            "/agent",
+            "/work",
+            "git:https://github.com/user/repo",
+            SourceScope::User,
+            None,
+        );
+
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].command, "remove_dir");
+        assert_eq!(
+            plan.steps[0].args,
+            vec!["/agent/git/github.com/user/repo", "/agent/git"]
+        );
     }
 
     #[test]

@@ -399,6 +399,33 @@ mod tests {
     }
 
     #[test]
+    fn remove_dir_step_prunes_empty_host_parent_to_git_root_like_pi() {
+        let root = temp_dir().join("git");
+        let host = root.join("github.com");
+        let owner = host.join("user");
+        let target = owner.join("repo");
+        fs::create_dir_all(&target).expect("target dir should be created");
+        fs::write(target.join("file.txt"), "demo").expect("file should be written");
+        let step = PackageCommandStep {
+            command: "remove_dir".to_string(),
+            args: vec![
+                target.to_string_lossy().to_string(),
+                root.to_string_lossy().to_string(),
+            ],
+            cwd: None,
+        };
+
+        PackageCommandExecutor
+            .run(&step)
+            .expect("remove_dir should succeed");
+
+        assert!(!target.exists());
+        assert!(!owner.exists());
+        assert!(!host.exists());
+        assert!(root.exists());
+    }
+
+    #[test]
     fn ensure_npm_project_creates_project_files() {
         let dir = temp_dir().join("npm-root");
         let step = PackageCommandStep {
