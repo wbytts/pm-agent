@@ -8,6 +8,7 @@ const MOD_ALT: u8 = 2;
 const MOD_CTRL: u8 = 4;
 const MOD_SUPER: u8 = 8;
 const LOCK_MASK: u8 = 64 | 128;
+const SUPPORTED_MODIFIER_MASK: u8 = MOD_SHIFT | MOD_ALT | MOD_CTRL | MOD_SUPER;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedKeyId {
@@ -926,7 +927,7 @@ fn format_key_name_for_codepoint(codepoint: i32, modifier: u8) -> Option<String>
     };
 
     let key_name = key_name_for_codepoint(effective_codepoint)?;
-    Some(format_key_name_with_modifiers(key_name, modifier))
+    format_key_name_with_modifiers(key_name, modifier)
 }
 
 fn key_name_for_codepoint(codepoint: i32) -> Option<String> {
@@ -955,8 +956,11 @@ fn key_name_for_codepoint(codepoint: i32) -> Option<String> {
     Some(key.to_string())
 }
 
-fn format_key_name_with_modifiers(key_name: String, modifier: u8) -> String {
+fn format_key_name_with_modifiers(key_name: String, modifier: u8) -> Option<String> {
     let modifier = modifier & !LOCK_MASK;
+    if modifier & !SUPPORTED_MODIFIER_MASK != 0 {
+        return None;
+    }
     let mut parts = Vec::new();
     if modifier & MOD_SHIFT != 0 {
         parts.push("shift");
@@ -971,9 +975,9 @@ fn format_key_name_with_modifiers(key_name: String, modifier: u8) -> String {
         parts.push("super");
     }
     if parts.is_empty() {
-        key_name
+        Some(key_name)
     } else {
-        format!("{}+{key_name}", parts.join("+"))
+        Some(format!("{}+{key_name}", parts.join("+")))
     }
 }
 
@@ -1224,6 +1228,11 @@ mod tests {
 
         assert!(!matches_key("\x1b[107::118;5u", "ctrl+v"));
         assert_eq!(parse_key("\x1b[107::118;5u"), Some("ctrl+k".to_string()));
+    }
+
+    #[test]
+    fn parse_key_rejects_kitty_sequences_with_unsupported_modifier_bits_like_pi() {
+        assert_eq!(parse_key("\x1b[99;17u"), None);
     }
 
     #[test]
