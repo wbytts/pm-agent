@@ -20,7 +20,7 @@ pub fn decode_html_entity(entity: &str) -> Option<String> {
 }
 
 pub fn decode_html_entity_at(html: &str, index: usize) -> Option<DecodedHtmlEntity> {
-    if index >= html.len() || !html.is_char_boundary(index) || html.as_bytes()[index] != b'&' {
+    if index >= html.len() || !html.is_char_boundary(index) {
         return None;
     }
 
@@ -58,6 +58,12 @@ mod tests {
         let decoded = decode_html_entity_at("a&amp;b", 1).expect("entity");
         assert_eq!(decoded.text, "&");
         assert_eq!(decoded.length, 5);
-        assert!(decode_html_entity_at("a&amp;b", 0).is_none());
+    }
+
+    #[test]
+    fn decodes_entity_slice_without_requiring_ampersand_like_pi() {
+        let decoded = decode_html_entity_at("xamp;b", 0).expect("entity");
+        assert_eq!(decoded.text, "&");
+        assert_eq!(decoded.length, 5);
     }
 }
