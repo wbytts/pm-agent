@@ -1,6 +1,6 @@
 use agent::harness::{
     build_session_context, InMemorySessionStorage, JsonlSessionStorage, SessionContext,
-    SessionStorage, SessionTreeEntry,
+    SessionErrorCode, SessionStorage, SessionTreeEntry,
 };
 use agent::AgentMessage;
 use serde::{Deserialize, Serialize};
@@ -124,8 +124,13 @@ impl SessionManager<JsonlSessionStorage> {
         {
             return Self::create_explicit_session_file(session_file, session_dir);
         }
-        let storage =
-            JsonlSessionStorage::open(&session_file).map_err(|error| error.to_string())?;
+        let storage = match JsonlSessionStorage::open(&session_file) {
+            Ok(storage) => storage,
+            Err(error) if error.code == SessionErrorCode::InvalidSession => {
+                return Self::create_explicit_session_file(session_file, session_dir);
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let cwd = storage
             .metadata()
             .cwd
@@ -611,6 +616,21 @@ mod tests {
         assert_eq!(manager.session_file(), Some(explicit_path.as_path()));
         let content = fs::read_to_string(&explicit_path).expect("session file should read");
         assert!(content.contains(r#""type":"session""#));
+    }
+
+    #[test]
+    fn open_corrupt_explicit_path_rewrites_new_session_like_pi() {
+        let dir = temp_dir();
+        let explicit_path = dir.join("corrupt.jsonl");
+        fs::write(&explicit_path, "not json\n{\"type\":\"message\"}\n")
+            .expect("corrupt session file should write");
+
+        let manager = SessionManager::open(&explicit_path, None).expect("session should open");
+
+        assert_eq!(manager.session_file(), Some(explicit_path.as_path()));
+        let content = fs::read_to_string(&explicit_path).expect("session file should read");
+        assert!(content.contains(r#""type":"session""#));
+        assert!(!content.contains("not json"));
     }
 
     fn temp_dir() -> PathBuf {
