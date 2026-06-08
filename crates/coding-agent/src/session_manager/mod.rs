@@ -147,7 +147,7 @@ impl SessionManager<JsonlSessionStorage> {
         let cwd = cwd.into();
         let session_dir = session_dir.unwrap_or_else(|| default_session_dir(&cwd));
         if let Some(path) = find_most_recent_session(&session_dir) {
-            return Self::open(path, Some(session_dir));
+            return Self::open_with_cwd(path, Some(session_dir), cwd);
         }
         Self::create(cwd, Some(session_dir))
     }
@@ -538,6 +538,19 @@ mod tests {
             find_most_recent_session(&dir),
             manager.session_file().map(Path::to_path_buf)
         );
+    }
+
+    #[test]
+    fn continue_recent_keeps_requested_cwd_like_pi() {
+        let dir = temp_dir();
+        let original = SessionManager::create("/tmp/original", Some(dir.clone()))
+            .expect("session should create");
+
+        let continued = SessionManager::continue_recent("/tmp/current", Some(dir))
+            .expect("session should continue");
+
+        assert_eq!(continued.session_file(), original.session_file());
+        assert_eq!(continued.cwd(), Path::new("/tmp/current"));
     }
 
     fn temp_dir() -> PathBuf {
