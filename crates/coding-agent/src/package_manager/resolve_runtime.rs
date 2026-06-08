@@ -380,6 +380,34 @@ mod tests {
     }
 
     #[test]
+    fn local_json_file_package_source_is_extension_like_pi() {
+        let dir = temp_dir();
+        let file = dir.join("extension.json");
+        fs::write(&file, "{}").expect("extension write");
+        let runner = FakeRunner::default();
+        let mut handler = Handler {
+            action: MissingSourceAction::Error,
+            seen: Vec::new(),
+        };
+
+        let resolved = resolve_package_sources(
+            &runner,
+            &mut handler,
+            "/agent",
+            "/work",
+            &[(file.to_string_lossy().to_string(), SourceScope::User, None)],
+            None,
+            |_| {},
+        )
+        .expect("resolve should succeed");
+
+        assert_eq!(resolved.extensions.len(), 1);
+        assert_eq!(resolved.extensions[0].path, file.to_string_lossy());
+        assert!(resolved.themes.is_empty());
+        assert!(handler.seen.is_empty());
+    }
+
+    #[test]
     fn local_directory_package_without_resources_is_extension_like_pi() {
         let dir = temp_dir();
         let runner = FakeRunner::default();
@@ -462,6 +490,7 @@ mod tests {
             resolved.extensions[0].metadata.base_dir.as_deref(),
             Some(package_dir.to_string_lossy().as_ref())
         );
+        assert!(resolved.prompts.is_empty());
         assert!(handler.seen.is_empty());
     }
 

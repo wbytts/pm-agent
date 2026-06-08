@@ -134,6 +134,8 @@ fn parse_hosted_shorthand(url: &str) -> Option<(String, String, String)> {
     let (service, path) = url.split_once(':')?;
     let host = match service {
         "github" => "github.com",
+        "gitlab" => "gitlab.com",
+        "bitbucket" => "bitbucket.org",
         _ => return None,
     };
     if path.split('/').count() < 2 {
@@ -209,6 +211,26 @@ mod tests {
         assert_eq!(source.path, "user/repo");
         assert_eq!(source.reference.as_deref(), Some("v1"));
         assert!(source.pinned);
+    }
+
+    #[test]
+    fn parses_gitlab_hosted_shorthand_with_git_prefix_like_pi() {
+        let source = parse_git_url("git:gitlab:user/repo@v1").expect("git source");
+        assert_eq!(source.repo, "https://gitlab.com/user/repo");
+        assert_eq!(source.host, "gitlab.com");
+        assert_eq!(source.path, "user/repo");
+        assert_eq!(source.reference.as_deref(), Some("v1"));
+        assert!(source.pinned);
+    }
+
+    #[test]
+    fn parses_bitbucket_hosted_shorthand_with_git_prefix_like_pi() {
+        let source = parse_git_url("git:bitbucket:user/repo").expect("git source");
+        assert_eq!(source.repo, "https://bitbucket.org/user/repo");
+        assert_eq!(source.host, "bitbucket.org");
+        assert_eq!(source.path, "user/repo");
+        assert_eq!(source.reference, None);
+        assert!(!source.pinned);
     }
 
     #[test]
