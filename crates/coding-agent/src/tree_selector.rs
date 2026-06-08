@@ -169,7 +169,7 @@ impl From<crate::session_manager::SessionTreeNode> for TreeSessionNode {
         Self {
             entry,
             label: value.label,
-            label_timestamp: None,
+            label_timestamp: value.label_timestamp,
             children: value
                 .children
                 .into_iter()
@@ -1249,6 +1249,7 @@ mod tests {
                 message: AgentMessage::new(MessageRole::User, "hello".to_string()),
             },
             label: Some("start".to_string()),
+            label_timestamp: Some("2026-06-07T08:00:30Z".to_string()),
             children: vec![crate::session_manager::SessionTreeNode {
                 entry: SessionTreeEntry::BranchSummary {
                     id: "branch".to_string(),
@@ -1260,6 +1261,7 @@ mod tests {
                     from_hook: false,
                 },
                 label: None,
+                label_timestamp: None,
                 children: vec![],
             }],
         }];

@@ -38,6 +38,7 @@ pub struct SessionTreeNode {
     pub entry: SessionTreeEntry,
     pub children: Vec<SessionTreeNode>,
     pub label: Option<String>,
+    pub label_timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -459,6 +460,7 @@ fn build_tree_node<S: SessionStorage>(
         entry: entry.clone(),
         children,
         label: storage.label(entry.id()),
+        label_timestamp: storage.label_timestamp(entry.id()),
     }
 }
 
@@ -519,6 +521,22 @@ mod tests {
         let context = manager.build_context().expect("context should build");
         assert_eq!(context.messages.len(), 1);
         assert_eq!(manager.tree().len(), 1);
+    }
+
+    #[test]
+    fn session_tree_exposes_label_timestamp_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "hello".to_string()))
+            .expect("message should append");
+        manager
+            .append_label_change(first, Some("start".to_string()))
+            .expect("label should append");
+
+        let tree = manager.tree();
+
+        assert_eq!(tree[0].label.as_deref(), Some("start"));
+        assert!(tree[0].label_timestamp.is_some());
     }
 
     #[test]

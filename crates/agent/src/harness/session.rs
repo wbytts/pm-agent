@@ -195,6 +195,7 @@ pub trait SessionStorage {
     fn entries(&self) -> Vec<SessionTreeEntry>;
     fn entries_by_type(&self, entry_type: &str) -> Vec<SessionTreeEntry>;
     fn label(&self, id: &str) -> Option<String>;
+    fn label_timestamp(&self, id: &str) -> Option<String>;
     fn path_to_root(&self, leaf_id: Option<&str>) -> SessionResult<Vec<SessionTreeEntry>>;
 }
 
@@ -415,6 +416,7 @@ pub struct InMemorySessionStorage {
     entries: Vec<SessionTreeEntry>,
     by_id: BTreeMap<String, SessionTreeEntry>,
     labels_by_id: BTreeMap<String, String>,
+    label_timestamps_by_id: BTreeMap<String, String>,
     leaf_id: Option<String>,
 }
 
@@ -425,9 +427,10 @@ impl InMemorySessionStorage {
     ) -> SessionResult<Self> {
         let mut by_id = BTreeMap::new();
         let mut labels_by_id = BTreeMap::new();
+        let mut label_timestamps_by_id = BTreeMap::new();
         let mut leaf_id = None;
         for entry in &entries {
-            update_label_cache(&mut labels_by_id, entry);
+            update_label_cache(&mut labels_by_id, &mut label_timestamps_by_id, entry);
             leaf_id = entry.leaf_id_after_entry();
             by_id.insert(entry.id().to_string(), entry.clone());
         }
@@ -445,6 +448,7 @@ impl InMemorySessionStorage {
             entries,
             by_id,
             labels_by_id,
+            label_timestamps_by_id,
             leaf_id,
         })
     }
@@ -500,7 +504,11 @@ impl SessionStorage for InMemorySessionStorage {
 
     fn append_entry(&mut self, entry: SessionTreeEntry) -> SessionResult<()> {
         self.leaf_id = entry.leaf_id_after_entry();
-        update_label_cache(&mut self.labels_by_id, &entry);
+        update_label_cache(
+            &mut self.labels_by_id,
+            &mut self.label_timestamps_by_id,
+            &entry,
+        );
         self.by_id.insert(entry.id().to_string(), entry.clone());
         self.entries.push(entry);
         Ok(())
@@ -524,6 +532,10 @@ impl SessionStorage for InMemorySessionStorage {
 
     fn label(&self, id: &str) -> Option<String> {
         self.labels_by_id.get(id).cloned()
+    }
+
+    fn label_timestamp(&self, id: &str) -> Option<String> {
+        self.label_timestamps_by_id.get(id).cloned()
     }
 
     fn path_to_root(&self, leaf_id: Option<&str>) -> SessionResult<Vec<SessionTreeEntry>> {
@@ -654,6 +666,10 @@ impl SessionStorage for JsonlSessionStorage {
 
     fn label(&self, id: &str) -> Option<String> {
         self.inner.label(id)
+    }
+
+    fn label_timestamp(&self, id: &str) -> Option<String> {
+        self.inner.label_timestamp(id)
     }
 
     fn path_to_root(&self, leaf_id: Option<&str>) -> SessionResult<Vec<SessionTreeEntry>> {
@@ -1062,9 +1078,16 @@ fn path_to_root(
     Ok(path)
 }
 
-fn update_label_cache(labels_by_id: &mut BTreeMap<String, String>, entry: &SessionTreeEntry) {
+fn update_label_cache(
+    labels_by_id: &mut BTreeMap<String, String>,
+    label_timestamps_by_id: &mut BTreeMap<String, String>,
+    entry: &SessionTreeEntry,
+) {
     if let SessionTreeEntry::Label {
-        target_id, label, ..
+        target_id,
+        label,
+        timestamp,
+        ..
     } = entry
     {
         if let Some(label) = label
@@ -1073,8 +1096,10 @@ fn update_label_cache(labels_by_id: &mut BTreeMap<String, String>, entry: &Sessi
             .filter(|value| !value.is_empty())
         {
             labels_by_id.insert(target_id.clone(), label.to_string());
+            label_timestamps_by_id.insert(target_id.clone(), timestamp.clone());
         } else {
             labels_by_id.remove(target_id);
+            label_timestamps_by_id.remove(target_id);
         }
     }
 }
