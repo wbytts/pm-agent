@@ -18,7 +18,7 @@ use crate::providers::{
 };
 use crate::types::{
     validate_model, AiError, AiResult, LanguageModelProvider, Message, MessageRole, StreamEvent,
-    StreamRequest, Usage, UsageCost,
+    StreamRequest, ToolDefinition, Usage, UsageCost,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,7 +228,18 @@ struct OpenAiResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAiResponsesToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiResponsesToolDefinition {
+    r#type: String,
+    name: String,
+    description: String,
+    parameters: Value,
+    strict: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -352,8 +363,24 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
             .get("serviceTier")
             .and_then(Value::as_str)
             .map(str::to_string),
+        tools: convert_responses_tools(&request.tools),
         reasoning: None,
     }
+}
+
+fn convert_responses_tools(tools: &[ToolDefinition]) -> Option<Vec<OpenAiResponsesToolDefinition>> {
+    (!tools.is_empty()).then(|| {
+        tools
+            .iter()
+            .map(|tool| OpenAiResponsesToolDefinition {
+                r#type: "function".to_string(),
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+                strict: false,
+            })
+            .collect()
+    })
 }
 
 fn responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
@@ -990,6 +1017,50 @@ mod tests {
             .expect("payload json");
 
         assert_eq!(value["service_tier"], "priority");
+    }
+
+    #[test]
+    fn builds_responses_payload_tools_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: vec![crate::types::ToolDefinition {
+                name: "lookup".to_string(),
+                description: "Look up a value".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    },
+                    "required": ["query"]
+                }),
+            }],
+            metadata: Default::default(),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["name"], "lookup");
+        assert_eq!(value["tools"][0]["description"], "Look up a value");
+        assert_eq!(
+            value["tools"][0]["parameters"]["properties"]["query"]["type"],
+            "string"
+        );
+        assert_eq!(value["tools"][0]["strict"], false);
     }
 
     #[test]
