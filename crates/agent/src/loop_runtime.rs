@@ -1215,6 +1215,52 @@ fn agent_messages_to_rich_messages(messages: &[AgentMessage], model: &Model) -> 
         .collect()
 }
 
+pub fn block_rich_message_images(messages: Vec<RichMessage>) -> Vec<RichMessage> {
+    messages
+        .into_iter()
+        .map(|message| match message {
+            RichMessage::User(mut user) => {
+                if let UserMessageContent::Blocks(blocks) = user.content {
+                    user.content = UserMessageContent::Blocks(block_user_content_images(blocks));
+                }
+                RichMessage::User(user)
+            }
+            RichMessage::ToolResult(mut tool_result) => {
+                tool_result.content = block_user_content_images(tool_result.content);
+                RichMessage::ToolResult(tool_result)
+            }
+            RichMessage::Assistant(assistant) => RichMessage::Assistant(assistant),
+        })
+        .collect()
+}
+
+fn block_user_content_images(blocks: Vec<UserContentBlock>) -> Vec<UserContentBlock> {
+    const IMAGE_BLOCKED_TEXT: &str = "Image reading is disabled.";
+
+    let mut filtered = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let replacement = match block {
+            UserContentBlock::Image(_) => UserContentBlock::Text(TextContent {
+                text: IMAGE_BLOCKED_TEXT.to_string(),
+                text_signature: None,
+            }),
+            UserContentBlock::Text(text) => UserContentBlock::Text(text),
+        };
+
+        let duplicate_placeholder = matches!(
+            (&replacement, filtered.last()),
+            (
+                UserContentBlock::Text(current),
+                Some(UserContentBlock::Text(previous))
+            ) if current.text == IMAGE_BLOCKED_TEXT && previous.text == IMAGE_BLOCKED_TEXT
+        );
+        if !duplicate_placeholder {
+            filtered.push(replacement);
+        }
+    }
+    filtered
+}
+
 fn rich_assistant_content(message: &AgentMessage) -> Vec<AssistantContentBlock> {
     if !message.content_blocks.is_empty() {
         return message.content_blocks.clone();
@@ -2788,6 +2834,90 @@ mod tests {
                 thinking_signature: Some("sig".to_string()),
                 redacted: false,
             })]
+        );
+    }
+
+    #[test]
+    fn block_rich_message_images_replaces_user_and_tool_images_like_pi_sdk() {
+        let messages = vec![
+            ai::RichMessage::User(ai::UserMessage {
+                content: ai::UserMessageContent::Blocks(vec![
+                    UserContentBlock::Text(TextContent {
+                        text: "before".to_string(),
+                        text_signature: None,
+                    }),
+                    UserContentBlock::Image(ImageContent {
+                        data: "image-1".to_string(),
+                        mime_type: "image/png".to_string(),
+                    }),
+                    UserContentBlock::Image(ImageContent {
+                        data: "image-2".to_string(),
+                        mime_type: "image/jpeg".to_string(),
+                    }),
+                    UserContentBlock::Text(TextContent {
+                        text: "after".to_string(),
+                        text_signature: None,
+                    }),
+                ]),
+                timestamp_millis: 1,
+            }),
+            ai::RichMessage::ToolResult(ai::ToolResultMessage {
+                tool_call_id: "call-1".to_string(),
+                tool_name: "read".to_string(),
+                content: vec![
+                    UserContentBlock::Image(ImageContent {
+                        data: "tool-image".to_string(),
+                        mime_type: "image/webp".to_string(),
+                    }),
+                    UserContentBlock::Text(TextContent {
+                        text: "tool text".to_string(),
+                        text_signature: None,
+                    }),
+                ],
+                details: None,
+                is_error: false,
+                timestamp_millis: 2,
+            }),
+        ];
+
+        let filtered = block_rich_message_images(messages);
+
+        let ai::RichMessage::User(user) = &filtered[0] else {
+            panic!("expected user message");
+        };
+        assert_eq!(
+            user.content,
+            ai::UserMessageContent::Blocks(vec![
+                UserContentBlock::Text(TextContent {
+                    text: "before".to_string(),
+                    text_signature: None,
+                }),
+                UserContentBlock::Text(TextContent {
+                    text: "Image reading is disabled.".to_string(),
+                    text_signature: None,
+                }),
+                UserContentBlock::Text(TextContent {
+                    text: "after".to_string(),
+                    text_signature: None,
+                }),
+            ])
+        );
+
+        let ai::RichMessage::ToolResult(tool_result) = &filtered[1] else {
+            panic!("expected tool result message");
+        };
+        assert_eq!(
+            tool_result.content,
+            vec![
+                UserContentBlock::Text(TextContent {
+                    text: "Image reading is disabled.".to_string(),
+                    text_signature: None,
+                }),
+                UserContentBlock::Text(TextContent {
+                    text: "tool text".to_string(),
+                    text_signature: None,
+                }),
+            ]
         );
     }
 
