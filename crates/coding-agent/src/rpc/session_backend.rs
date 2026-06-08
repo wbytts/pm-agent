@@ -1,4 +1,6 @@
-use agent::harness::{PromptTemplate, SessionStorage, Skill};
+use agent::harness::{
+    InMemorySessionStorage, JsonlSessionStorage, PromptTemplate, SessionStorage, Skill,
+};
 use agent::AgentMessage;
 use ai::{clamp_thinking_level, supported_thinking_levels, MessageRole, Model, ModelThinkingLevel};
 use std::path::PathBuf;
@@ -15,6 +17,54 @@ use crate::slash_commands::SlashCommandInfo;
 
 use super::command_registry::RpcCommandRegistry;
 use super::prompt_input::PromptInputProcessor;
+
+pub trait RpcSessionLifecycle: SessionStorage {
+    fn replace_with_new_session(
+        manager: &mut SessionManager<Self>,
+        parent_session: Option<String>,
+    ) -> Result<(), String>
+    where
+        Self: Sized;
+
+    fn switch_to_session(
+        manager: &mut SessionManager<Self>,
+        session_path: String,
+    ) -> Result<(), String>
+    where
+        Self: Sized;
+}
+
+impl RpcSessionLifecycle for InMemorySessionStorage {
+    fn replace_with_new_session(
+        manager: &mut SessionManager<Self>,
+        parent_session: Option<String>,
+    ) -> Result<(), String> {
+        manager.replace_with_new_session(parent_session)
+    }
+
+    fn switch_to_session(
+        _manager: &mut SessionManager<Self>,
+        _session_path: String,
+    ) -> Result<(), String> {
+        Err("switch_session is not supported by in-memory RPC sessions".to_string())
+    }
+}
+
+impl RpcSessionLifecycle for JsonlSessionStorage {
+    fn replace_with_new_session(
+        manager: &mut SessionManager<Self>,
+        parent_session: Option<String>,
+    ) -> Result<(), String> {
+        manager.replace_with_new_session(parent_session)
+    }
+
+    fn switch_to_session(
+        manager: &mut SessionManager<Self>,
+        session_path: String,
+    ) -> Result<(), String> {
+        manager.switch_to_session(session_path)
+    }
+}
 
 pub struct ManagedRpcSessionBackend<S: SessionStorage, B: AuthStorageBackend> {
     session_manager: SessionManager<S>,
@@ -151,7 +201,7 @@ impl<S: SessionStorage, B: AuthStorageBackend> ManagedRpcSessionBackend<S, B> {
     }
 }
 
-impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
+impl<S: RpcSessionLifecycle, B: AuthStorageBackend> RpcSessionBackend
     for ManagedRpcSessionBackend<S, B>
 {
     fn prompt(&mut self, message: String) -> Result<(), String> {
@@ -196,6 +246,15 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
 
     fn abort(&mut self) -> Result<(), String> {
         Ok(())
+    }
+
+    fn new_session(&mut self, parent_session: Option<String>) -> Result<serde_json::Value, String> {
+        S::replace_with_new_session(&mut self.session_manager, parent_session)?;
+        self.steering_messages.clear();
+        self.follow_up_messages.clear();
+        Ok(serde_json::json!({
+            "cancelled": false,
+        }))
     }
 
     fn set_model(&mut self, provider: String, model_id: String) -> Result<Model, String> {
@@ -308,6 +367,15 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
             },
         )
         .map(|path| path.to_string_lossy().to_string())
+    }
+
+    fn switch_session(&mut self, session_path: String) -> Result<serde_json::Value, String> {
+        S::switch_to_session(&mut self.session_manager, session_path)?;
+        self.steering_messages.clear();
+        self.follow_up_messages.clear();
+        Ok(serde_json::json!({
+            "cancelled": false,
+        }))
     }
 
     fn fork(&mut self, entry_id: String) -> Result<serde_json::Value, String> {
@@ -622,6 +690,92 @@ mod tests {
         let state = backend.state().expect("state");
         assert_eq!(state.pending_message_count, 2);
         assert!(backend.messages().expect("messages").is_empty());
+    }
+
+    #[test]
+    fn managed_backend_new_session_replaces_current_session_like_pi_rpc() {
+        let mut backend = test_backend();
+        backend.prompt("old".to_string()).expect("prompt");
+        backend.steer("pending".to_string()).expect("steer");
+
+        let result = backend.new_session(None).expect("new session");
+
+        assert_eq!(result["cancelled"], false);
+        assert!(backend.messages().expect("messages").is_empty());
+        assert_eq!(backend.state().expect("state").pending_message_count, 0);
+    }
+
+    #[test]
+    fn persisted_rpc_backend_new_session_records_parent_session_like_pi_rpc() {
+        let dir = temp_dir();
+        let session_manager = SessionManager::create("/tmp/project", Some(dir.clone()))
+            .expect("session should create");
+        let auth_storage = AuthStorage::in_memory(AuthStorageData::new());
+        let model_registry = ModelRegistry::in_memory(auth_storage);
+        let mut backend = ManagedRpcSessionBackend::new(session_manager, model_registry);
+        backend.prompt("old".to_string()).expect("prompt");
+        let old_file = backend
+            .state()
+            .expect("state")
+            .session_file
+            .expect("session file");
+
+        let result = backend
+            .new_session(Some(old_file.clone()))
+            .expect("new session");
+
+        let state = backend.state().expect("state");
+        assert_eq!(result["cancelled"], false);
+        assert!(backend.messages().expect("messages").is_empty());
+        assert_ne!(state.session_file.as_deref(), Some(old_file.as_str()));
+        assert_eq!(
+            backend
+                .session_manager()
+                .storage_metadata()
+                .parent_session_path
+                .as_deref(),
+            Some(old_file.as_str())
+        );
+        assert_eq!(backend.session_manager().session_dir(), dir.as_path());
+    }
+
+    #[test]
+    fn persisted_rpc_backend_switches_session_like_pi_rpc() {
+        let dir = temp_dir();
+        let mut first = SessionManager::create("/tmp/first", Some(dir.clone()))
+            .expect("first session should create");
+        first
+            .append_message(AgentMessage::new(MessageRole::User, "first".to_string()))
+            .expect("first message");
+        let first_file = first.session_file().expect("first file").to_path_buf();
+        let mut second =
+            SessionManager::create("/tmp/second", Some(dir)).expect("second session should create");
+        second
+            .append_message(AgentMessage::new(MessageRole::User, "second".to_string()))
+            .expect("second message");
+        let second_file = second.session_file().expect("second file").to_path_buf();
+        let auth_storage = AuthStorage::in_memory(AuthStorageData::new());
+        let model_registry = ModelRegistry::in_memory(auth_storage);
+        let mut backend = ManagedRpcSessionBackend::new(first, model_registry);
+
+        let result = backend
+            .switch_session(second_file.to_string_lossy().to_string())
+            .expect("switch session");
+
+        assert_eq!(result["cancelled"], false);
+        assert_eq!(
+            backend.state().expect("state").session_file.as_deref(),
+            Some(second_file.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            backend.session_manager().cwd(),
+            std::path::Path::new("/tmp/second")
+        );
+        assert_eq!(backend.messages().expect("messages")[0].content, "second");
+        assert_ne!(
+            backend.state().expect("state").session_file.as_deref(),
+            Some(first_file.to_string_lossy().as_ref())
+        );
     }
 
     #[test]

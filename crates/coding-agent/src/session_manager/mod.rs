@@ -91,10 +91,26 @@ impl SessionManager<InMemorySessionStorage> {
             cwd,
         }
     }
+
+    pub fn replace_with_new_session(
+        &mut self,
+        _parent_session: Option<String>,
+    ) -> Result<(), String> {
+        self.storage = InMemorySessionStorage::default();
+        Ok(())
+    }
 }
 
 impl SessionManager<JsonlSessionStorage> {
     pub fn create(cwd: impl Into<PathBuf>, session_dir: Option<PathBuf>) -> Result<Self, String> {
+        Self::create_with_parent(cwd, session_dir, None)
+    }
+
+    pub fn create_with_parent(
+        cwd: impl Into<PathBuf>,
+        session_dir: Option<PathBuf>,
+        parent_session: Option<String>,
+    ) -> Result<Self, String> {
         let cwd = cwd.into();
         let session_dir = session_dir.unwrap_or_else(|| default_session_dir(&cwd));
         fs::create_dir_all(&session_dir)
@@ -105,7 +121,7 @@ impl SessionManager<JsonlSessionStorage> {
             &session_file,
             cwd.to_string_lossy().to_string(),
             session_id,
-            None,
+            parent_session,
         )
         .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -115,6 +131,23 @@ impl SessionManager<JsonlSessionStorage> {
             session_file: Some(session_file),
             persist: true,
         })
+    }
+
+    pub fn replace_with_new_session(
+        &mut self,
+        parent_session: Option<String>,
+    ) -> Result<(), String> {
+        *self = Self::create_with_parent(
+            self.cwd.clone(),
+            Some(self.session_dir.clone()),
+            parent_session,
+        )?;
+        Ok(())
+    }
+
+    pub fn switch_to_session(&mut self, session_path: impl Into<PathBuf>) -> Result<(), String> {
+        *self = Self::open(session_path, None)?;
+        Ok(())
     }
 
     pub fn open(path: impl Into<PathBuf>, session_dir: Option<PathBuf>) -> Result<Self, String> {
