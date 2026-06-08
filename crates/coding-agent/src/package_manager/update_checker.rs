@@ -156,4 +156,44 @@ mod tests {
     fn rejects_invalid_git_head_output() {
         assert_eq!(first_git_head("not-a-head\tHEAD\n"), None);
     }
+
+    #[test]
+    fn latest_npm_version_uses_configured_npm_command_argv_like_pi() {
+        let checker = CommandUpdateChecker::new(
+            ".",
+            Some(NpmCommandConfig {
+                command: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    r#"[ "$*" = 'view @scope/pkg version --json' ] && printf '"1.2.3"\n'"#
+                        .to_string(),
+                    "script".to_string(),
+                ],
+            }),
+        );
+
+        let latest = checker
+            .latest_npm_version("@scope/pkg")
+            .expect("npm version lookup should run");
+
+        assert_eq!(latest, Some("1.2.3".to_string()));
+    }
+
+    #[test]
+    fn latest_npm_version_treats_empty_stdout_as_missing_version_like_pi() {
+        let checker = CommandUpdateChecker::new(
+            ".",
+            Some(NpmCommandConfig {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "printf ''".to_string()],
+            }),
+        );
+
+        assert_eq!(
+            checker
+                .latest_npm_version("example")
+                .expect("empty npm lookup should not fail"),
+            None
+        );
+    }
 }
