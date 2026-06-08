@@ -139,8 +139,8 @@ impl<B: AuthStorageBackend> ModelRegistry<B> {
         if api_key.starts_with('!') {
             return AuthStatus {
                 configured: true,
-                source: Some(AuthSource::Fallback),
-                label: Some("models.json command".to_string()),
+                source: Some(AuthSource::ModelsJsonCommand),
+                label: None,
             };
         }
         if std::env::var(api_key).is_ok() {
@@ -152,8 +152,8 @@ impl<B: AuthStorageBackend> ModelRegistry<B> {
         }
         AuthStatus {
             configured: true,
-            source: Some(AuthSource::Fallback),
-            label: Some("models.json key".to_string()),
+            source: Some(AuthSource::ModelsJsonKey),
+            label: None,
         }
     }
 
@@ -485,6 +485,56 @@ mod tests {
         assert_eq!(
             auth.error.as_deref(),
             Some("Failed to resolve API key for provider \"demo\" from shell command: sh -c 'exit 7'")
+        );
+    }
+
+    #[test]
+    fn provider_auth_status_reports_models_json_key_sources_like_pi() {
+        let dir = temp_dir();
+        let key_path = dir.join("models-key.json");
+        fs::write(
+            &key_path,
+            r#"{
+              "providers": {
+                "demo": {
+                  "apiKey": "literal-key",
+                  "api": "openai-chat-completions",
+                  "models": [
+                    {"id": "demo-1", "name": "Demo 1", "contextWindow": 4096}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .expect("models.json should be written");
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let registry = ModelRegistry::create(storage, key_path);
+        assert_eq!(
+            registry.provider_auth_status("demo").source,
+            Some(AuthSource::ModelsJsonKey)
+        );
+
+        let command_path = dir.join("models-command.json");
+        fs::write(
+            &command_path,
+            r#"{
+              "providers": {
+                "demo": {
+                  "apiKey": "!printf key",
+                  "api": "openai-chat-completions",
+                  "models": [
+                    {"id": "demo-1", "name": "Demo 1", "contextWindow": 4096}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .expect("models.json should be written");
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let registry = ModelRegistry::create(storage, command_path);
+        assert_eq!(
+            registry.provider_auth_status("demo").source,
+            Some(AuthSource::ModelsJsonCommand)
         );
     }
 

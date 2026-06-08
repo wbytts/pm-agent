@@ -26,6 +26,8 @@ pub enum AuthSource {
     Runtime,
     Environment,
     Fallback,
+    ModelsJsonKey,
+    ModelsJsonCommand,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
