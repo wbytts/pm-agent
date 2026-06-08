@@ -380,10 +380,10 @@ fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
     {
         return None;
     }
-    if let Some(effort) = responses_requested_reasoning_effort(request) {
+    if let Some((effort, summary)) = responses_requested_reasoning(request) {
         return Some(json!({
             "effort": effort,
-            "summary": "auto",
+            "summary": summary,
         }));
     }
     let off_effort = match request
@@ -399,12 +399,23 @@ fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
 }
 
 fn responses_include(request: &StreamRequest) -> Option<Vec<String>> {
-    responses_requested_reasoning_effort(request)
-        .map(|_| vec!["reasoning.encrypted_content".to_string()])
+    responses_requested_reasoning(request).map(|_| vec!["reasoning.encrypted_content".to_string()])
 }
 
-fn responses_requested_reasoning_effort(request: &StreamRequest) -> Option<String> {
-    let level = request.metadata.get("reasoning").and_then(Value::as_str)?;
+fn responses_requested_reasoning(request: &StreamRequest) -> Option<(String, String)> {
+    let summary = request
+        .metadata
+        .get("reasoningSummary")
+        .and_then(Value::as_str);
+    let effort = match request.metadata.get("reasoning").and_then(Value::as_str) {
+        Some(level) => responses_mapped_reasoning_effort(request, level)?,
+        None if summary.is_some() => "medium".to_string(),
+        None => return None,
+    };
+    Some((effort, summary.unwrap_or("auto").to_string()))
+}
+
+fn responses_mapped_reasoning_effort(request: &StreamRequest, level: &str) -> Option<String> {
     let mapped = match level {
         "off" => request
             .model
@@ -1218,6 +1229,36 @@ mod tests {
 
         assert_eq!(value["reasoning"]["effort"], "high");
         assert_eq!(value["reasoning"]["summary"], "auto");
+        assert_eq!(value["include"][0], "reasoning.encrypted_content");
+    }
+
+    #[test]
+    fn builds_responses_payload_reasoning_summary_without_effort_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            reasoning: Some(crate::types::ModelReasoning { enabled: true }),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("reasoningSummary".to_string(), json!("detailed"))]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["reasoning"]["effort"], "medium");
+        assert_eq!(value["reasoning"]["summary"], "detailed");
         assert_eq!(value["include"][0], "reasoning.encrypted_content");
     }
 
