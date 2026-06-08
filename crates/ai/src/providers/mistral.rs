@@ -218,14 +218,16 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
     let mut content = String::new();
     let mut saw_finish = false;
     let mut response_id = None;
+    let mut stop_reason = AssistantStopReason::Stop;
 
     for chunk in chunks {
         if response_id.is_none() {
             response_id = chunk.id.clone().filter(|value| !value.is_empty());
         }
         if let Some(choice) = chunk.choices.into_iter().next() {
-            if choice.finish_reason.is_some() {
+            if let Some(reason) = choice.finish_reason.as_deref() {
                 saw_finish = true;
+                stop_reason = map_mistral_chat_stop_reason(reason);
             }
             if let Some(delta) = choice.delta {
                 for text in mistral_delta_texts(delta.content) {
@@ -273,13 +275,23 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
             response_model: None,
             response_id,
             usage: Usage::default(),
-            stop_reason: AssistantStopReason::Stop,
+            stop_reason,
             error_message: None,
             diagnostics: Vec::new(),
             timestamp_millis: 0,
         },
     });
     Ok(events)
+}
+
+fn map_mistral_chat_stop_reason(reason: &str) -> AssistantStopReason {
+    match reason {
+        "stop" => AssistantStopReason::Stop,
+        "length" | "model_length" => AssistantStopReason::Length,
+        "tool_calls" => AssistantStopReason::ToolUse,
+        "error" => AssistantStopReason::Error,
+        _ => AssistantStopReason::Stop,
+    }
 }
 
 fn parse_mistral_sse_text(input: &str) -> Result<Vec<MistralStreamChunk>, String> {
@@ -456,6 +468,19 @@ mod tests {
                 .result()
                 .and_then(|message| message.response_id.as_deref()),
             Some("cmpl_resp_1")
+        );
+    }
+
+    #[test]
+    fn mistral_stream_maps_finish_reason_like_pi() {
+        let sse = "data: {\"id\":\"cmpl_resp_1\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"tool_calls\"}]}\n\n";
+
+        let events = mistral_sse_text_to_stream_events(sse).expect("sse should parse");
+        let stream = crate::provider_events_to_stream(events).expect("stream");
+
+        assert_eq!(
+            stream.result().map(|message| message.stop_reason.clone()),
+            Some(AssistantStopReason::ToolUse)
         );
     }
 

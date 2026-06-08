@@ -6,8 +6,8 @@ use crate::conversation::{
     UserMessageContent,
 };
 use crate::providers::google_shared::{
-    convert_google_messages, is_thinking_part, retain_thought_signature, GoogleContent,
-    GoogleMessagesContext, GooglePart, GooglePartThinkingState,
+    convert_google_messages, is_thinking_part, map_google_stop_reason, retain_thought_signature,
+    GoogleContent, GoogleMessagesContext, GooglePart, GooglePartThinkingState,
 };
 use crate::types::{
     validate_model, AiError, AiResult, AssistantStopReason, LanguageModelProvider, Message,
@@ -136,6 +136,8 @@ struct GoogleGenerateContentResponse {
 #[derive(Debug, Deserialize)]
 struct GoogleCandidate {
     content: GoogleContent,
+    #[serde(default, rename = "finishReason")]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,12 +218,16 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
     let mut current_text_open = false;
     let mut generated_tool_call_counter = 0usize;
     let mut response_id = None;
+    let mut stop_reason = AssistantStopReason::Stop;
 
     for chunk in chunks {
         if response_id.is_none() {
             response_id = chunk.response_id.filter(|value| !value.is_empty());
         }
         for candidate in chunk.candidates {
+            if let Some(reason) = candidate.finish_reason.as_deref() {
+                stop_reason = map_google_stop_reason(reason);
+            }
             for part in candidate.content.parts {
                 if let Some(text) = part.text.clone().filter(|text| !text.is_empty()) {
                     let thinking_state = GooglePartThinkingState {
@@ -286,6 +292,7 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
                         content_index,
                         tool_call,
                     });
+                    stop_reason = AssistantStopReason::ToolUse;
                 }
             }
         }
@@ -322,7 +329,7 @@ pub(crate) fn google_sse_text_to_stream_events(input: &str) -> Result<Vec<Stream
             response_model: None,
             response_id,
             usage: Usage::default(),
-            stop_reason: AssistantStopReason::Stop,
+            stop_reason,
             error_message: None,
             diagnostics: Vec::new(),
             timestamp_millis: 0,
@@ -538,6 +545,19 @@ mod tests {
                 .result()
                 .and_then(|message| message.response_id.as_deref()),
             Some("resp_google_1")
+        );
+    }
+
+    #[test]
+    fn google_stream_maps_finish_reason_like_pi() {
+        let sse = "data: {\"candidates\":[{\"finishReason\":\"MAX_TOKENS\",\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n";
+
+        let events = google_sse_text_to_stream_events(sse).expect("sse should parse");
+        let stream = crate::provider_events_to_stream(events).expect("stream");
+
+        assert_eq!(
+            stream.result().map(|message| message.stop_reason.clone()),
+            Some(AssistantStopReason::Length)
         );
     }
 
