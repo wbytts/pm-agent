@@ -11,14 +11,14 @@ fn greet(name: &str) -> String {
 }
 
 #[tauri::command]
-fn pm_agent_create_session() -> PmAgentSession {
+fn pm_agent_create_session() -> Result<PmAgentSession, String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let cwd = std::env::current_dir()
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_default();
-    pm_agent::create_session_with_workspace(format!("pm-agent-{timestamp}"), "PM Agent", cwd)
+    pm_agent::try_create_session_with_workspace(format!("pm-agent-{timestamp}"), "PM Agent", cwd)
 }
 
 #[tauri::command]

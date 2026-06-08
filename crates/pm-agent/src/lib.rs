@@ -8,6 +8,6 @@ pub use coding_tools::execute_coding_tool;
 pub use model_catalog::{available_models, available_providers};
 pub use prompt::{send_prompt, user_message};
 pub use session::{
-    create_session, create_session_with_workspace, set_session_model, PmAgentRequest,
-    PmAgentResponse, PmAgentSession,
+    create_session, create_session_with_workspace, set_session_model,
+    try_create_session_with_workspace, PmAgentRequest, PmAgentResponse, PmAgentSession,
 };
