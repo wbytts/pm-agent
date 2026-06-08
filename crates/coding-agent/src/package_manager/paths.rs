@@ -1,4 +1,5 @@
 use super::manifest::read_pi_manifest;
+use super::resolver::collect_manifest_enabled_files;
 use super::types::ResourceType;
 use std::path::{Path, PathBuf};
 
@@ -49,11 +50,7 @@ pub(super) fn display_path(path: impl AsRef<Path>) -> String {
 pub(super) fn resolve_extension_entries(dir: &Path) -> Option<Vec<PathBuf>> {
     if let Some(manifest) = read_pi_manifest(dir) {
         if let Some(entries) = manifest.extensions {
-            let resolved = entries
-                .into_iter()
-                .map(|entry| dir.join(entry))
-                .filter(|path| path.exists())
-                .collect::<Vec<_>>();
+            let resolved = collect_manifest_enabled_files(&entries, dir, ResourceType::Extension);
             if !resolved.is_empty() {
                 return Some(resolved);
             }

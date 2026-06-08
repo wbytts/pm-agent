@@ -278,7 +278,7 @@ fn collect_manifest_entries_for_type(
     }
 }
 
-fn collect_manifest_enabled_files(
+pub(super) fn collect_manifest_enabled_files(
     entries: &[String],
     base_dir: &Path,
     resource_type: ResourceType,
@@ -953,6 +953,39 @@ mod tests {
 
         assert_eq!(resolved.prompts.len(), 1);
         assert_eq!(resolved.prompts[0].path, prompt.to_string_lossy());
+    }
+
+    #[test]
+    fn extension_subdir_manifest_resolves_globs_like_pi() {
+        let package_dir = temp_dir();
+        let extension_dir = package_dir.join("extensions").join("custom");
+        let main = extension_dir.join("main.ts");
+        let helper = extension_dir.join("helper.ts");
+        fs::create_dir_all(&extension_dir).expect("extension dir");
+        fs::write(
+            extension_dir.join("package.json"),
+            r#"{"pi":{"extensions":["*.ts","!helper.ts"]}}"#,
+        )
+        .expect("subdir manifest");
+        fs::write(&main, "export default function() {}").expect("main extension");
+        fs::write(&helper, "export const helper = 1").expect("helper extension");
+
+        let resolved = resolve_source_at_path(
+            "local-package",
+            &package_dir,
+            SourceScope::User,
+            SourceOrigin::Package,
+            None,
+        );
+
+        assert!(resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == main.to_string_lossy() && resource.enabled));
+        assert!(!resolved
+            .extensions
+            .iter()
+            .any(|resource| resource.path == helper.to_string_lossy()));
     }
 
     fn temp_dir() -> PathBuf {
