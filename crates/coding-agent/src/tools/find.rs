@@ -25,9 +25,17 @@ pub fn find_files(
     }
 
     let limit = limit.unwrap_or(1000);
+    let effective_pattern = effective_find_pattern(&pattern);
     let mut results = Vec::new();
     let mut ignore = IgnoreMatcher::load(&root);
-    collect_find_results(&root, &root, &pattern, limit, &mut results, &mut ignore)?;
+    collect_find_results(
+        &root,
+        &root,
+        &effective_pattern,
+        limit,
+        &mut results,
+        &mut ignore,
+    )?;
     let reached_limit = results.len() >= limit;
     if results.is_empty() {
         return success("No files found matching pattern");
@@ -41,6 +49,18 @@ pub fn find_files(
         ));
     }
     success(truncate_list_output(&results.join("\n"), notices))
+}
+
+fn effective_find_pattern(pattern: &str) -> String {
+    if pattern.contains('/')
+        && !pattern.starts_with('/')
+        && !pattern.starts_with("**/")
+        && pattern != "**"
+    {
+        format!("**/{pattern}")
+    } else {
+        pattern.to_string()
+    }
 }
 
 fn collect_find_results(

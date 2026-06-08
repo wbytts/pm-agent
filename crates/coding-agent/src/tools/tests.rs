@@ -173,6 +173,31 @@ fn grep_defaults_to_regex_and_literal_keeps_pattern_verbatim_like_pi() {
 }
 
 #[test]
+fn find_path_globs_match_nested_paths_like_pi_fd_full_path_mode() {
+    let workspace = temp_workspace();
+    execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "nested/src/main.rs".to_string(),
+            content: "fn main() {}".to_string(),
+        },
+    )
+    .expect("write should work");
+
+    let found = execute_tool(
+        &workspace,
+        CodingToolRequest::Find {
+            pattern: "src/**/*.rs".to_string(),
+            path: None,
+            limit: None,
+        },
+    )
+    .expect("find should work");
+
+    assert!(found.output.contains("nested/src/main.rs"));
+}
+
+#[test]
 fn read_truncates_large_text_outputs() {
     let workspace = temp_workspace();
     let content = (0..2100)
