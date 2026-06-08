@@ -345,6 +345,35 @@ impl<S: SessionStorage> SessionManager<S> {
         Ok(id)
     }
 
+    pub fn fork_before_user_message(&mut self, entry_id: &str) -> Result<String, String> {
+        let target = self
+            .storage
+            .entry(entry_id)
+            .ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        let (parent_id, text) = match target {
+            SessionTreeEntry::Message {
+                parent_id, message, ..
+            } if message.role == ai::MessageRole::User => {
+                (parent_id.clone(), message.content.clone())
+            }
+            _ => return Err(format!("Entry {entry_id} is not a user message")),
+        };
+        self.storage
+            .set_leaf_id(parent_id)
+            .map_err(|error| error.to_string())?;
+        Ok(text)
+    }
+
+    pub fn clone_at_leaf(&mut self) -> Result<(), String> {
+        let leaf_id = self.leaf_id()?;
+        let Some(leaf_id) = leaf_id else {
+            return Err("Cannot clone session: no current entry selected".to_string());
+        };
+        self.storage
+            .set_leaf_id(Some(leaf_id))
+            .map_err(|error| error.to_string())
+    }
+
     pub fn session_name(&self) -> Option<String> {
         self.storage
             .entries_by_type("session_info")
@@ -578,6 +607,35 @@ mod tests {
         assert_eq!(fork_messages.len(), 1);
         assert_eq!(fork_messages[0].entry_id, first);
         assert_eq!(fork_messages[0].text, "first request");
+    }
+
+    #[test]
+    fn memory_session_manager_forks_before_user_message_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        manager
+            .append_message(AgentMessage::new(MessageRole::User, "first".to_string()))
+            .expect("first message should append");
+        manager
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "answer".to_string(),
+            ))
+            .expect("assistant message should append");
+        let second = manager
+            .append_message(AgentMessage::new(MessageRole::User, "second".to_string()))
+            .expect("second message should append");
+
+        manager
+            .fork_before_user_message(&second)
+            .expect("session should fork");
+
+        let messages = manager
+            .build_context()
+            .expect("context should build")
+            .messages;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "first");
+        assert_eq!(messages[1].content, "answer");
     }
 
     #[test]

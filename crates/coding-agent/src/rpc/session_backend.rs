@@ -190,6 +190,21 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
         .map(|path| path.to_string_lossy().to_string())
     }
 
+    fn fork(&mut self, entry_id: String) -> Result<serde_json::Value, String> {
+        let text = self.session_manager.fork_before_user_message(&entry_id)?;
+        Ok(serde_json::json!({
+            "text": text,
+            "cancelled": false,
+        }))
+    }
+
+    fn clone_session(&mut self) -> Result<serde_json::Value, String> {
+        self.session_manager.clone_at_leaf()?;
+        Ok(serde_json::json!({
+            "cancelled": false,
+        }))
+    }
+
     fn fork_messages(&self) -> Result<Vec<ForkMessage>, String> {
         Ok(self.session_manager.fork_messages())
     }
@@ -204,15 +219,7 @@ impl<S: SessionStorage, B: AuthStorageBackend> RpcSessionBackend
     }
 
     fn messages(&self) -> Result<Vec<AgentMessage>, String> {
-        Ok(self
-            .session_manager
-            .entries()
-            .into_iter()
-            .filter_map(|entry| match entry {
-                agent::harness::SessionTreeEntry::Message { message, .. } => Some(message),
-                _ => None,
-            })
-            .collect())
+        Ok(self.session_manager.build_context()?.messages)
     }
 
     fn commands(&self) -> Result<Vec<RpcSlashCommand>, String> {
@@ -422,6 +429,57 @@ mod tests {
             backend.messages().expect("messages")[0].content,
             "/unknown arg"
         );
+    }
+
+    #[test]
+    fn managed_backend_forks_before_user_message_like_pi_rpc() {
+        let mut backend = test_backend();
+        backend.prompt("first".to_string()).expect("first prompt");
+        backend
+            .session_manager_mut()
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "answer".to_string(),
+            ))
+            .expect("assistant message");
+        let fork_entry = backend
+            .session_manager_mut()
+            .append_message(AgentMessage::new(MessageRole::User, "second".to_string()))
+            .expect("second message");
+
+        let result = backend.fork(fork_entry).expect("fork");
+
+        assert_eq!(result["cancelled"], false);
+        assert_eq!(result["text"], "second");
+        assert_eq!(
+            backend.messages().expect("messages"),
+            vec![
+                AgentMessage::new(MessageRole::User, "first".to_string()),
+                AgentMessage::new(MessageRole::Assistant, "answer".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_backend_clones_current_leaf_like_pi_rpc() {
+        let mut backend = test_backend();
+        backend.prompt("first".to_string()).expect("first prompt");
+
+        let result = backend.clone_session().expect("clone");
+
+        assert_eq!(result["cancelled"], false);
+        assert_eq!(backend.messages().expect("messages").len(), 1);
+    }
+
+    #[test]
+    fn managed_backend_rejects_clone_without_current_leaf_like_pi_rpc() {
+        let mut backend = test_backend();
+
+        let error = backend
+            .clone_session()
+            .expect_err("clone without leaf should fail");
+
+        assert_eq!(error, "Cannot clone session: no current entry selected");
     }
 
     #[test]
