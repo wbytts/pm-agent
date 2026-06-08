@@ -286,22 +286,18 @@ impl<B: AuthStorageBackend> ModelRegistry<B> {
         model: &Model,
     ) -> Result<(Option<String>, Option<BTreeMap<String, String>>), String> {
         let provider_config = self.provider_request_configs.get(&model.provider);
-        let api_key = self
-            .auth_storage
-            .api_key(&model.provider, false)
-            .or_else(|| {
-                provider_config
-                    .and_then(|config| config.api_key.as_deref())
-                    .map(|api_key| {
-                        resolve_config_value_or_throw(
-                            api_key,
-                            &format!("API key for provider \"{}\"", model.provider),
-                        )
-                    })
-                    .transpose()
-                    .ok()
-                    .flatten()
-            });
+        let api_key = match self.auth_storage.api_key(&model.provider, false) {
+            Some(api_key) => Some(api_key),
+            None => provider_config
+                .and_then(|config| config.api_key.as_deref())
+                .map(|api_key| {
+                    resolve_config_value_or_throw(
+                        api_key,
+                        &format!("API key for provider \"{}\"", model.provider),
+                    )
+                })
+                .transpose()?,
+        };
         let provider_headers = resolve_headers_or_throw(
             provider_config.and_then(|config| config.headers.as_ref()),
             &format!("provider \"{}\"", model.provider),
@@ -456,6 +452,39 @@ mod tests {
             auth.headers
                 .and_then(|headers| headers.get("X-Model").cloned()),
             Some("builtin".to_string())
+        );
+    }
+
+    #[test]
+    fn request_auth_reports_provider_api_key_resolution_errors_like_pi() {
+        let dir = temp_dir();
+        let path = dir.join("models.json");
+        fs::write(
+            &path,
+            r#"{
+              "providers": {
+                "demo": {
+                  "apiKey": "!sh -c 'exit 7'",
+                  "api": "openai-chat-completions",
+                  "models": [
+                    {"id": "demo-1", "name": "Demo 1", "contextWindow": 4096}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .expect("models.json should be written");
+
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let registry = ModelRegistry::create(storage, path);
+        let model = registry.find("demo", "demo-1").expect("model should load");
+
+        let auth = registry.get_api_key_and_headers(&model);
+
+        assert!(!auth.ok);
+        assert_eq!(
+            auth.error.as_deref(),
+            Some("Failed to resolve API key for provider \"demo\" from shell command: sh -c 'exit 7'")
         );
     }
 
