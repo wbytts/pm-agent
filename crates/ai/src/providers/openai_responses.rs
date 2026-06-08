@@ -64,7 +64,7 @@ impl LanguageModelProvider for OpenAiResponsesProvider {
         post_responses(
             responses_url(&base_url),
             Some(api_key),
-            &request.model.headers,
+            &responses_request_headers(&request),
             build_responses_payload(&request, Some(false)),
         )
     }
@@ -204,7 +204,7 @@ impl LanguageModelProvider for OpenAiCodexResponsesProvider {
         post_responses(
             codex_responses_url(&base_url),
             Some(api_key),
-            &request.model.headers,
+            &responses_request_headers(&request),
             build_responses_payload(&request, Some(false)),
         )
     }
@@ -369,6 +369,32 @@ fn responses_cache_retention(request: &StreamRequest) -> Option<&str> {
         .metadata
         .get("cacheRetention")
         .and_then(Value::as_str)
+}
+
+fn responses_request_headers(request: &StreamRequest) -> BTreeMap<String, String> {
+    let mut headers = request.model.headers.clone();
+    if responses_cache_retention(request) == Some("none") {
+        return headers;
+    }
+
+    let Some(session_id) = request.metadata.get("sessionId").and_then(Value::as_str) else {
+        return headers;
+    };
+    let send_session_id = request
+        .model
+        .compat
+        .get("sendSessionIdHeader")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if send_session_id {
+        headers
+            .entry("session_id".to_string())
+            .or_insert_with(|| session_id.to_string());
+    }
+    headers
+        .entry("x-client-request-id".to_string())
+        .or_insert_with(|| session_id.to_string());
+    headers
 }
 
 fn responses_system_prompt_from_messages(messages: &[Message]) -> Option<String> {
@@ -959,6 +985,100 @@ mod tests {
             .expect("payload json");
 
         assert!(value.get("prompt_cache_retention").is_none());
+    }
+
+    #[test]
+    fn builds_responses_cache_affinity_headers_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("sessionId".to_string(), json!("session-123"))]),
+        };
+
+        let headers = responses_request_headers(&request);
+
+        assert_eq!(
+            headers.get("session_id").map(String::as_str),
+            Some("session-123")
+        );
+        assert_eq!(
+            headers.get("x-client-request-id").map(String::as_str),
+            Some("session-123")
+        );
+    }
+
+    #[test]
+    fn can_omit_responses_session_id_header_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            compat: BTreeMap::from([("sendSessionIdHeader".to_string(), json!(false))]),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("sessionId".to_string(), json!("session-123"))]),
+        };
+
+        let headers = responses_request_headers(&request);
+
+        assert!(headers.get("session_id").is_none());
+        assert_eq!(
+            headers.get("x-client-request-id").map(String::as_str),
+            Some("session-123")
+        );
+    }
+
+    #[test]
+    fn omits_responses_cache_affinity_headers_when_cache_retention_is_none_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([
+                ("sessionId".to_string(), json!("session-123")),
+                ("cacheRetention".to_string(), json!("none")),
+            ]),
+        };
+
+        let headers = responses_request_headers(&request);
+
+        assert!(headers.get("session_id").is_none());
+        assert!(headers.get("x-client-request-id").is_none());
     }
 
     #[test]
