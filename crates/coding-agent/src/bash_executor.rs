@@ -1,12 +1,13 @@
 use crate::exec::{exec_command, ExecOptions};
 use crate::tools::output_accumulator::{OutputAccumulator, OutputAccumulatorOptions};
 use crate::tools::truncate::{format_size, TruncatedBy, DEFAULT_MAX_BYTES};
-use crate::utils::shell::sanitize_binary_output;
+use crate::utils::shell::{get_shell_config, sanitize_binary_output};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default)]
 pub struct BashExecutorOptions {
     pub timeout_ms: Option<u64>,
+    pub shell_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,18 +26,11 @@ pub fn execute_bash(
     options: Option<BashExecutorOptions>,
 ) -> Result<BashResult, String> {
     let options = options.unwrap_or_default();
-    let shell = if cfg!(target_os = "windows") {
-        "cmd"
-    } else {
-        "sh"
-    };
-    let args = if cfg!(target_os = "windows") {
-        vec!["/C".to_string(), command.to_string()]
-    } else {
-        vec!["-lc".to_string(), command.to_string()]
-    };
+    let shell_config = get_shell_config(options.shell_path.as_deref())?;
+    let mut args = shell_config.args;
+    args.push(command.to_string());
     let result = exec_command(
-        shell,
+        &shell_config.shell,
         &args,
         cwd,
         Some(ExecOptions {
@@ -128,5 +122,38 @@ mod tests {
         let full = std::fs::read_to_string(path).expect("full output should exist");
         assert!(full.contains("line-0"));
         assert!(full.contains("line-2100"));
+    }
+
+    #[test]
+    fn executes_bash_with_custom_shell_path_like_pi() {
+        let dir = std::env::temp_dir().join(format!(
+            "pm-agent-bash-shell-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir should create");
+        let shell = dir.join("custom-shell");
+        std::fs::write(&shell, "#!/bin/sh\nprintf custom-shell\n").expect("shell should write");
+        let mut permissions = std::fs::metadata(&shell).expect("metadata").permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(0o755);
+        }
+        std::fs::set_permissions(&shell, permissions).expect("permissions should update");
+
+        let result = execute_bash(
+            "printf normal",
+            ".",
+            Some(BashExecutorOptions {
+                shell_path: Some(shell.to_string_lossy().to_string()),
+                ..BashExecutorOptions::default()
+            }),
+        )
+        .expect("bash should run");
+
+        assert_eq!(result.output, "custom-shell");
     }
 }
