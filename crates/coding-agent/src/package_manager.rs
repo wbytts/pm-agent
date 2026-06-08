@@ -1124,6 +1124,49 @@ mod tests {
     }
 
     #[test]
+    fn installed_path_uses_wrapped_pnpm_global_list_path_like_pi() {
+        let agent_dir = temp_dir();
+        let cwd = temp_dir();
+        let pnpm_root = temp_dir().join("pnpm").join("global").join("v11");
+        let package_path = pnpm_root
+            .join("20-hash")
+            .join("node_modules")
+            .join("pnpm-pkg");
+        fs::create_dir_all(&package_path).expect("legacy pnpm package path should be created");
+        let command = fake_pnpm_list_command(&pnpm_root, &package_path);
+
+        let installed = LocalPackageManager::get_installed_path_with_npm_command(
+            &agent_dir,
+            &cwd,
+            "npm:pnpm-pkg",
+            SourceScope::User,
+            Some(command),
+        );
+
+        assert_eq!(
+            installed.as_deref(),
+            Some(display_path(&package_path).as_str())
+        );
+    }
+
+    #[test]
+    fn installed_path_ignores_malformed_pnpm_global_list_like_pi() {
+        let agent_dir = temp_dir();
+        let cwd = temp_dir();
+        let command = fake_malformed_pnpm_list_command();
+
+        let installed = LocalPackageManager::get_installed_path_with_npm_command(
+            &agent_dir,
+            &cwd,
+            "npm:pnpm-pkg",
+            SourceScope::User,
+            Some(command),
+        );
+
+        assert!(installed.is_none());
+    }
+
+    #[test]
     fn list_configured_packages_from_settings_preserves_filtered_entries_like_pi() {
         let agent_dir = temp_dir();
         let cwd = temp_dir();
@@ -1675,6 +1718,53 @@ mod tests {
         NpmCommandConfig {
             command: display_path(command),
             args: Vec::new(),
+        }
+    }
+
+    fn fake_pnpm_list_command(pnpm_root: &Path, package_path: &Path) -> NpmCommandConfig {
+        fake_pnpm_command(&format!(
+            r#"[{{"path":"{}","dependencies":{{"pnpm-pkg":{{"path":"{}"}}}}}}]"#,
+            pnpm_root.to_string_lossy(),
+            package_path.to_string_lossy()
+        ))
+    }
+
+    fn fake_malformed_pnpm_list_command() -> NpmCommandConfig {
+        fake_pnpm_command("not json")
+    }
+
+    fn fake_pnpm_command(output: &str) -> NpmCommandConfig {
+        let bin_dir = temp_dir().join("bin");
+        fs::create_dir_all(&bin_dir).expect("fake pnpm bin dir should be created");
+        let command = bin_dir.join("wrapper");
+        fs::write(
+            &command,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"exec\" ] && [ \"$2\" = \"node@20\" ] && [ \"$3\" = \"--\" ] && [ \"$4\" = \"pnpm\" ] && [ \"$5\" = \"list\" ] && [ \"$6\" = \"-g\" ] && [ \"$7\" = \"--depth\" ] && [ \"$8\" = \"0\" ] && [ \"$9\" = \"--json\" ]; then\n  printf '%s\\n' '{}'\n  exit 0\nfi\nexit 1\n",
+                output.replace('\'', "'\\''")
+            ),
+        )
+        .expect("fake pnpm command should be written");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&command)
+                .expect("fake pnpm metadata should exist")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&command, permissions)
+                .expect("fake pnpm command should be executable");
+        }
+
+        NpmCommandConfig {
+            command: display_path(command),
+            args: vec![
+                "exec".to_string(),
+                "node@20".to_string(),
+                "--".to_string(),
+                "pnpm".to_string(),
+            ],
         }
     }
 
