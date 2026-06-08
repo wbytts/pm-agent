@@ -224,6 +224,8 @@ struct OpenAiResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
 }
 
@@ -342,6 +344,7 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
         prompt_cache_key: responses_prompt_cache_key(request),
         prompt_cache_retention: responses_prompt_cache_retention(request),
         max_output_tokens: request.model.max_tokens,
+        temperature: request.metadata.get("temperature").and_then(Value::as_f64),
         reasoning: None,
     }
 }
@@ -926,6 +929,33 @@ mod tests {
             .expect("payload json");
 
         assert_eq!(value["prompt_cache_retention"], "24h");
+    }
+
+    #[test]
+    fn builds_responses_payload_temperature_from_metadata_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("temperature".to_string(), json!(0.3))]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["temperature"], json!(0.3));
     }
 
     #[test]
