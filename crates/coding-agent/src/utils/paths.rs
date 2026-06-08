@@ -199,10 +199,14 @@ fn home_dir(override_home: Option<&Path>) -> PathBuf {
 
 fn file_url_to_path(value: &str) -> Option<PathBuf> {
     let rest = value.strip_prefix("file://")?;
+    let decoded = percent_decode_utf8(rest).unwrap_or_else(|| rest.to_string());
     if cfg!(target_os = "windows") {
-        Some(PathBuf::from(rest.trim_start_matches('/')))
+        Some(PathBuf::from(decoded.trim_start_matches('/')))
     } else {
-        Some(PathBuf::from(format!("/{}", rest.trim_start_matches('/'))))
+        Some(PathBuf::from(format!(
+            "/{}",
+            decoded.trim_start_matches('/')
+        )))
     }
 }
 
@@ -212,6 +216,35 @@ fn path_to_slash_string(path: impl AsRef<Path>) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn percent_decode_utf8(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hi = bytes.get(index + 1).and_then(|byte| hex_value(*byte))?;
+            let lo = bytes.get(index + 2).and_then(|byte| hex_value(*byte))?;
+            decoded.push((hi << 4) | lo);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -230,6 +263,14 @@ mod tests {
         assert_eq!(
             normalize_path(" @~/a\u{00a0}b ", Some(&options)),
             PathBuf::from("/home/test/a b")
+        );
+    }
+
+    #[test]
+    fn file_url_paths_decode_percent_escapes_like_node_file_url_to_path() {
+        assert_eq!(
+            normalize_path("file:///tmp/a%20b/%E4%B8%AD.txt", None),
+            PathBuf::from("/tmp/a b/中.txt")
         );
     }
 
