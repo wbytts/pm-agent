@@ -144,7 +144,7 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
         }
     }
 
-    pub fn reload(&mut self) {
+    pub fn reload(&mut self) -> Result<(), String> {
         self.settings_manager.reload();
         let resolved = LocalPackageManager::resolve_from_settings(
             self.package_runner.as_ref(),
@@ -155,7 +155,7 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
             None,
             |_| {},
         )
-        .unwrap_or_default();
+        .map_err(|error| error.to_string())?;
         let cli_resolved = LocalPackageManager::resolve_extension_sources(
             &self.additional_extension_paths,
             true,
@@ -240,6 +240,7 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
             .iter()
             .filter_map(|source| resolve_prompt_input(Some(source)))
             .collect();
+        Ok(())
     }
 
     pub fn extensions(&self) -> &LoadExtensionsResult {
@@ -857,13 +858,50 @@ mod tests {
             system_prompt: None,
             append_system_prompt: Vec::new(),
         });
-        loader.reload();
+        loader.reload().expect("reload should succeed");
         assert_eq!(loader.skills().0[0].name, "demo");
         assert_eq!(loader.prompts().0[0].name, "prompt");
         assert_eq!(loader.themes().0[0].name, "work");
         let commands = loader.resource_slash_commands();
         assert!(commands.iter().any(|command| command.name == "prompt"));
         assert!(commands.iter().any(|command| command.name == "skill:demo"));
+    }
+
+    #[test]
+    fn reload_reports_package_manager_errors_like_pi() {
+        let dir = temp_dir();
+        let settings = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({
+            "packages": ["npm:pkg"],
+            "npmCommand": [""]
+        }));
+        let mut loader = DefaultResourceLoader::new(DefaultResourceLoaderOptions {
+            cwd: dir.clone(),
+            agent_dir: dir.clone(),
+            user_agents_dir: Some(temp_dir().join(".agents")),
+            settings_manager: settings,
+            package_runner: None,
+            additional_extension_paths: Vec::new(),
+            additional_skill_paths: Vec::new(),
+            additional_prompt_paths: Vec::new(),
+            additional_theme_paths: Vec::new(),
+            extension_factories: Vec::new(),
+            no_extensions: true,
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            system_prompt: None,
+            append_system_prompt: Vec::new(),
+        });
+
+        let error = loader
+            .reload()
+            .expect_err("package-manager errors should propagate from reload");
+
+        assert_eq!(
+            error,
+            "Invalid npmCommand: first array entry must be a non-empty command"
+        );
     }
 
     #[test]
@@ -891,7 +929,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         let diagnostics = loader.prompts().1;
         assert!(diagnostics.iter().any(|diagnostic| {
@@ -926,7 +964,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         let diagnostics = loader.skills().1;
         assert!(diagnostics.iter().any(|diagnostic| {
@@ -961,7 +999,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert!(loader.extensions().errors.iter().any(|error| {
             error.extension_path == missing_extension.to_string_lossy()
@@ -1006,7 +1044,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         let errors = &loader.extensions().errors;
         assert!(errors.iter().any(|error| {
@@ -1053,7 +1091,7 @@ mod tests {
             system_prompt: None,
             append_system_prompt: Vec::new(),
         });
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         loader.extend_resources_from_extensions(crate::extensions::DiscoveredExtensionResources {
             skill_paths: vec![crate::extensions::ExtensionResourcePath {
@@ -1117,7 +1155,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert_eq!(loader.prompts().0[0].name, "review");
     }
@@ -1150,7 +1188,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert_eq!(loader.prompts().0[0].name, "generated");
     }
@@ -1182,7 +1220,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         let commands =
             crate::slash_commands::slash_commands_to_rpc(&loader.resource_slash_commands());
@@ -1240,7 +1278,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         let extension = loader
             .extensions()
@@ -1314,7 +1352,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
         let resources = crate::extensions::emit_resources_discover(
             &loader.extensions().extensions,
             "",
@@ -1364,7 +1402,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert_eq!(loader.prompts().0[0].name, "review");
     }
@@ -1403,7 +1441,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert_eq!(loader.skills().0[0].name, "review");
     }
@@ -1446,7 +1484,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert_eq!(loader.skills().0[0].name, "review");
     }
@@ -1484,7 +1522,7 @@ mod tests {
             append_system_prompt: Vec::new(),
         });
 
-        loader.reload();
+        loader.reload().expect("reload should succeed");
 
         assert_eq!(loader.skills().0[0].name, "personal");
     }

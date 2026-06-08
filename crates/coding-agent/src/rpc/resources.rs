@@ -121,7 +121,7 @@ mod tests {
             system_prompt: None,
             append_system_prompt: Vec::new(),
         });
-        loader.reload();
+        loader.reload().expect("reload should succeed");
         let mut backend = test_backend();
 
         let snapshot = backend.apply_loaded_resources(&loader);
@@ -190,7 +190,7 @@ mod tests {
             system_prompt: None,
             append_system_prompt: Vec::new(),
         });
-        loader.reload();
+        loader.reload().expect("reload should succeed");
         let mut backend = test_backend();
 
         let snapshot = backend.apply_loaded_resources(&loader);
