@@ -509,6 +509,61 @@ mod tests {
     }
 
     #[test]
+    fn git_ensure_ref_recovers_from_rewritten_remote_history_like_pi() {
+        let root = temp_dir();
+        let remote = root.join("remote");
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&remote).expect("remote dir should be created");
+        git(&remote, &["init", "--initial-branch=main"]);
+        git(&remote, &["config", "user.email", "test@test.com"]);
+        git(&remote, &["config", "user.name", "Test"]);
+        write_commit(&remote, "extension.ts", "// v1", "v1");
+
+        git(
+            &root,
+            &["clone", remote.to_string_lossy().as_ref(), "checkout"],
+        );
+        assert_eq!(read_file(&checkout, "extension.ts"), "// v1");
+
+        write_commit(&remote, "extension.ts", "// v2", "v2");
+        let first_update = PackageCommandStep {
+            command: "git_ensure_ref".to_string(),
+            args: vec![
+                "@{upstream}^{commit}".to_string(),
+                "--".to_string(),
+                "fetch".to_string(),
+                "--prune".to_string(),
+                "--no-tags".to_string(),
+                "origin".to_string(),
+                "+refs/heads/main:refs/remotes/origin/main".to_string(),
+            ],
+            cwd: Some(checkout.to_string_lossy().to_string()),
+        };
+        let first_result = PackageCommandExecutor
+            .run(&first_update)
+            .expect("first git update should succeed");
+        assert_eq!(first_result.stdout, "changed");
+        assert_eq!(read_file(&checkout, "extension.ts"), "// v2");
+
+        git(&remote, &["reset", "--hard", "HEAD~1"]);
+        let rewritten_commit = write_commit(&remote, "extension.ts", "// rewritten", "rewrite");
+        let junk = checkout.join("untracked.tmp");
+        fs::write(&junk, "junk").expect("junk file should write");
+
+        let rewritten_result = PackageCommandExecutor
+            .run(&first_update)
+            .expect("rewritten history update should succeed");
+
+        assert_eq!(rewritten_result.stdout, "changed");
+        assert_eq!(
+            git_output(&checkout, &["rev-parse", "HEAD"]),
+            rewritten_commit
+        );
+        assert_eq!(read_file(&checkout, "extension.ts"), "// rewritten");
+        assert!(!junk.exists(), "git clean should remove untracked files");
+    }
+
+    #[test]
     fn ensure_dir_creates_nested_directory_like_pi_git_install_parent() {
         let dir = temp_dir().join("git").join("github.com").join("user");
         let step = PackageCommandStep {
@@ -549,5 +604,35 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-agent-package-executor-test-{id}-{count}"));
         fs::create_dir_all(&dir).expect("temp dir should be created");
         dir
+    }
+
+    fn write_commit(repo: &Path, file: &str, content: &str, message: &str) -> String {
+        fs::write(repo.join(file), content).expect("tracked file should write");
+        git(repo, &["add", file]);
+        git(repo, &["commit", "-m", message]);
+        git_output(repo, &["rev-parse", "HEAD"])
+    }
+
+    fn read_file(dir: &Path, file: &str) -> String {
+        fs::read_to_string(dir.join(file)).expect("file should read")
+    }
+
+    fn git(cwd: &Path, args: &[&str]) {
+        git_output(cwd, args);
+    }
+
+    fn git_output(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should start");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 }
