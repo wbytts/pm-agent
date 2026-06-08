@@ -211,11 +211,18 @@ fn file_url_to_path(value: &str) -> Option<PathBuf> {
 }
 
 fn path_to_slash_string(path: impl AsRef<Path>) -> String {
-    path.as_ref()
+    let mut parts = path
+        .as_ref()
         .components()
         .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
+        .collect::<Vec<_>>();
+
+    if parts.first().is_some_and(|part| part.as_ref() == "/") {
+        parts.remove(0);
+        format!("/{}", parts.join("/"))
+    } else {
+        parts.join("/")
+    }
 }
 
 fn percent_decode_utf8(value: &str) -> Option<String> {
@@ -322,6 +329,14 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn formats_outside_absolute_path_with_single_leading_slash_like_pi() {
+        assert_eq!(
+            format_path_relative_to_cwd_or_absolute("/tmp/outside.txt", "/var/work"),
+            "/tmp/outside.txt"
+        );
     }
 
     #[test]
