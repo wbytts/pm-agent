@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::env;
 
@@ -17,8 +17,8 @@ use crate::providers::{
     resolve_cloudflare_base_url_from_str,
 };
 use crate::types::{
-    validate_model, AiError, AiResult, LanguageModelProvider, Message, MessageRole, StreamEvent,
-    StreamRequest, ToolDefinition, Usage, UsageCost,
+    validate_model, AiError, AiResult, LanguageModelProvider, Message, MessageRole,
+    ModelThinkingLevel, StreamEvent, StreamRequest, ToolDefinition, Usage, UsageCost,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,8 +364,29 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
             .and_then(Value::as_str)
             .map(str::to_string),
         tools: convert_responses_tools(&request.tools),
-        reasoning: None,
+        reasoning: responses_reasoning(request),
     }
+}
+
+fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
+    if !request
+        .model
+        .reasoning
+        .as_ref()
+        .is_some_and(|reasoning| reasoning.enabled)
+    {
+        return None;
+    }
+    let off_effort = match request
+        .model
+        .thinking_level_map
+        .get(&ModelThinkingLevel::Off)
+    {
+        Some(Some(effort)) => effort.as_str(),
+        Some(None) => return None,
+        None => "none",
+    };
+    Some(json!({ "effort": off_effort }))
 }
 
 fn convert_responses_tools(tools: &[ToolDefinition]) -> Option<Vec<OpenAiResponsesToolDefinition>> {
@@ -1061,6 +1082,63 @@ mod tests {
             "string"
         );
         assert_eq!(value["tools"][0]["strict"], false);
+    }
+
+    #[test]
+    fn builds_responses_payload_default_off_reasoning_like_pi() {
+        let model = Model {
+            id: "gpt-5.4".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5.4".to_string(),
+            context_window: 128_000,
+            reasoning: Some(crate::types::ModelReasoning { enabled: true }),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["reasoning"]["effort"], "none");
+    }
+
+    #[test]
+    fn omits_responses_default_reasoning_when_off_is_unsupported_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            reasoning: Some(crate::types::ModelReasoning { enabled: true }),
+            thinking_level_map: BTreeMap::from([(ModelThinkingLevel::Off, None)]),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: Default::default(),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert!(value.get("reasoning").is_none());
     }
 
     #[test]
