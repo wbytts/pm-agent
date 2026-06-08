@@ -524,6 +524,22 @@ mod tests {
         assert!(dir.is_dir());
     }
 
+    #[test]
+    fn command_runner_preserves_argv_entries_containing_spaces_like_pi() {
+        let value = "C:\\Users\\A B\\.pi\\npm";
+        let step = PackageCommandStep {
+            command: "/usr/bin/printf".to_string(),
+            args: vec!["%s".to_string(), value.to_string()],
+            cwd: None,
+        };
+
+        let result = PackageCommandExecutor
+            .run(&step)
+            .expect("argv should be passed without shell splitting");
+
+        assert_eq!(result.stdout.trim(), value);
+    }
+
     fn temp_dir() -> PathBuf {
         let id = SystemTime::now()
             .duration_since(UNIX_EPOCH)
