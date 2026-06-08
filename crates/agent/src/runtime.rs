@@ -2,6 +2,8 @@ use ai::{
     AssistantContentBlock, LanguageModelProvider, Message as AiMessage, MessageRole, StreamEvent,
     StreamRequest, TextContent, ThinkingContent, ToolCall,
 };
+use serde_json::json;
+use std::collections::BTreeMap;
 
 use crate::error::{AgentError, AgentResult};
 use crate::state::{AgentEvent, AgentMessage, AgentState};
@@ -43,6 +45,7 @@ impl<P: LanguageModelProvider> Agent<P> {
             content: message.content.clone(),
         }));
 
+        let metadata = BTreeMap::from([("sessionId".to_string(), json!(self.state.session_id))]);
         let mut events = vec![AgentEvent::AgentStart];
         let response = self
             .provider
@@ -51,7 +54,7 @@ impl<P: LanguageModelProvider> Agent<P> {
                 messages: request_messages,
                 rich_messages: Vec::new(),
                 tools: Vec::new(),
-                metadata: Default::default(),
+                metadata,
             })
             .map_err(|error| AgentError::Ai(error.to_string()))?;
 
@@ -242,6 +245,7 @@ mod tests {
     use ai::{types::StreamToolCall, AiResult, Model, ToolCall, Usage};
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Debug, Clone)]
     struct ToolCallProvider;
@@ -321,5 +325,56 @@ mod tests {
                 && name == "read"
                 && arguments["path"] == json!("README.md")
         ));
+    }
+
+    #[derive(Debug, Clone)]
+    struct CapturingProvider {
+        metadata: Arc<Mutex<Option<BTreeMap<String, serde_json::Value>>>>,
+    }
+
+    impl LanguageModelProvider for CapturingProvider {
+        fn stream(&self, request: StreamRequest) -> AiResult<Vec<StreamEvent>> {
+            *self.metadata.lock().expect("metadata lock") = Some(request.metadata);
+            Ok(vec![StreamEvent::Finished {
+                message: AiMessage {
+                    role: MessageRole::Assistant,
+                    content: "ok".to_string(),
+                },
+            }])
+        }
+    }
+
+    #[test]
+    fn runtime_forwards_session_id_to_stream_metadata_like_pi_agent() {
+        let metadata = Arc::new(Mutex::new(None));
+        let state = AgentState {
+            session_id: "session-abc".to_string(),
+            system_prompt: String::new(),
+            model: Model {
+                id: "model".to_string(),
+                provider: "local".to_string(),
+                api: "faux".to_string(),
+                display_name: "Model".to_string(),
+                context_window: 1000,
+                ..Model::default()
+            },
+            messages: Vec::new(),
+            is_streaming: false,
+        };
+        let mut agent = Agent::new(
+            state,
+            CapturingProvider {
+                metadata: metadata.clone(),
+            },
+        );
+
+        agent.prompt("hello").expect("prompt should run");
+
+        let captured = metadata
+            .lock()
+            .expect("metadata lock")
+            .clone()
+            .expect("provider should receive request metadata");
+        assert_eq!(captured.get("sessionId"), Some(&json!("session-abc")));
     }
 }
