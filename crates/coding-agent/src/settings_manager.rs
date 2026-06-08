@@ -172,13 +172,25 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     pub fn get_compaction_settings(&self) -> (bool, u64, u64) {
         (
-            self.get_nested_bool("compaction", "enabled")
-                .unwrap_or(true),
-            self.get_nested_u64("compaction", "reserveTokens")
-                .unwrap_or(16_384),
-            self.get_nested_u64("compaction", "keepRecentTokens")
-                .unwrap_or(20_000),
+            self.get_compaction_enabled(),
+            self.get_compaction_reserve_tokens(),
+            self.get_compaction_keep_recent_tokens(),
         )
+    }
+
+    pub fn get_compaction_enabled(&self) -> bool {
+        self.get_nested_bool("compaction", "enabled")
+            .unwrap_or(true)
+    }
+
+    pub fn get_compaction_reserve_tokens(&self) -> u64 {
+        self.get_nested_u64("compaction", "reserveTokens")
+            .unwrap_or(16_384)
+    }
+
+    pub fn get_compaction_keep_recent_tokens(&self) -> u64 {
+        self.get_nested_u64("compaction", "keepRecentTokens")
+            .unwrap_or(20_000)
     }
 
     pub fn set_compaction_enabled(&mut self, enabled: bool) {
@@ -190,17 +202,30 @@ impl<S: SettingsStorage> SettingsManager<S> {
         (
             self.get_nested_u64("branchSummary", "reserveTokens")
                 .unwrap_or(16_384),
-            self.get_nested_bool("branchSummary", "skipPrompt")
-                .unwrap_or(false),
+            self.get_branch_summary_skip_prompt(),
         )
+    }
+
+    pub fn get_branch_summary_skip_prompt(&self) -> bool {
+        self.get_nested_bool("branchSummary", "skipPrompt")
+            .unwrap_or(false)
     }
 
     pub fn get_retry_settings(&self) -> (bool, u64, u64) {
         (
-            self.get_nested_bool("retry", "enabled").unwrap_or(true),
+            self.get_retry_enabled(),
             self.get_nested_u64("retry", "maxRetries").unwrap_or(3),
             self.get_nested_u64("retry", "baseDelayMs").unwrap_or(2_000),
         )
+    }
+
+    pub fn get_retry_enabled(&self) -> bool {
+        self.get_nested_bool("retry", "enabled").unwrap_or(true)
+    }
+
+    pub fn set_retry_enabled(&mut self, enabled: bool) {
+        self.set_global_nested("retry", "enabled", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_provider_retry_settings(&self) -> (Option<u64>, Option<u64>, u64) {
@@ -361,6 +386,11 @@ impl<S: SettingsStorage> SettingsManager<S> {
             }),
             None => DEFAULT_HTTP_IDLE_TIMEOUT_MS,
         }
+    }
+
+    pub fn set_http_idle_timeout_ms(&mut self, timeout_ms: u64) {
+        self.set_global("httpIdleTimeoutMs", Value::from(timeout_ms));
+        self.save_scope(SettingsScope::Global);
     }
 
     pub fn get_enabled_models(&self) -> Option<Vec<String>> {
@@ -1121,6 +1151,39 @@ mod tests {
         assert_eq!(manager.get_transport(), "websocket");
         assert_eq!(manager.get_steering_mode(), "all");
         assert_eq!(manager.get_follow_up_mode(), "all");
+    }
+
+    #[test]
+    fn compaction_retry_and_http_accessors_match_pi_settings() {
+        let mut manager = SettingsManager::in_memory(json!({
+            "compaction": {
+                "enabled": false,
+                "reserveTokens": 42,
+                "keepRecentTokens": 84
+            }
+        }));
+
+        assert!(!manager.get_compaction_enabled());
+        assert_eq!(manager.get_compaction_reserve_tokens(), 42);
+        assert_eq!(manager.get_compaction_keep_recent_tokens(), 84);
+        assert!(manager.get_retry_enabled());
+
+        manager.set_retry_enabled(false);
+        manager.set_http_idle_timeout_ms(12_345);
+
+        assert!(!manager.get_retry_enabled());
+        assert_eq!(manager.get_http_idle_timeout_ms(), 12_345);
+    }
+
+    #[test]
+    fn branch_summary_skip_prompt_getter_matches_pi_settings() {
+        let manager = SettingsManager::in_memory(json!({
+            "branchSummary": {
+                "skipPrompt": true
+            }
+        }));
+
+        assert!(manager.get_branch_summary_skip_prompt());
     }
 
     #[test]
