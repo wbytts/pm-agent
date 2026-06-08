@@ -1,7 +1,5 @@
 use super::git_update::git_update_target;
-use super::source::{
-    git_install_path, git_install_root, git_storage_root, parse_source, temp_package_dir,
-};
+use super::source::{git_install_path, git_storage_root, parse_source, temp_package_dir};
 use super::types::{
     NpmCommandConfig, NpmSource, PackageCommandStep, PackageOperationPlan, ParsedSource,
     ProgressAction, SourceScope,
@@ -174,9 +172,9 @@ fn install_git_steps(
     if scope != SourceScope::Temporary {
         steps.push(PackageCommandStep {
             command: "ensure_git_root".to_string(),
-            args: vec![display_path(git_install_root(
-                agent_dir, cwd, source, scope,
-            ))],
+            args: vec![display_path(
+                git_storage_root(agent_dir, cwd, scope).expect("non-temporary git root"),
+            )],
             cwd: None,
         });
     }
@@ -551,7 +549,7 @@ mod tests {
             None,
         );
         assert_eq!(plan.steps[0].command, "ensure_git_root");
-        assert_eq!(plan.steps[0].args, vec!["/agent/git/github.com"]);
+        assert_eq!(plan.steps[0].args, vec!["/agent/git"]);
         assert_eq!(plan.steps[1].command, "ensure_dir");
         assert_eq!(plan.steps[1].args, vec!["/agent/git/github.com/user"]);
         assert_eq!(plan.steps[2].command, "git");
@@ -559,6 +557,22 @@ mod tests {
         assert_eq!(plan.steps[3].args, vec!["checkout", "main"]);
         assert_eq!(plan.steps[4].command, "run_if_package_json");
         assert_eq!(plan.steps[4].args, vec!["npm", "install", "--omit=dev"]);
+    }
+
+    #[test]
+    fn plans_git_install_ensures_git_storage_root_like_pi() {
+        let plan = plan_install(
+            "/agent",
+            "/work",
+            "git:https://github.com/user/repo",
+            SourceScope::User,
+            None,
+        );
+
+        assert_eq!(plan.steps[0].command, "ensure_git_root");
+        assert_eq!(plan.steps[0].args, vec!["/agent/git"]);
+        assert_eq!(plan.steps[1].command, "ensure_dir");
+        assert_eq!(plan.steps[1].args, vec!["/agent/git/github.com/user"]);
     }
 
     #[test]
