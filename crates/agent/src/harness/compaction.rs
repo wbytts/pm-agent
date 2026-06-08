@@ -1,4 +1,6 @@
-use ai::{AssistantStopReason, MessageRole, Usage};
+use ai::{
+    AssistantStopReason, MessageRole, RichMessage, Usage, UserContentBlock, UserMessageContent,
+};
 
 use crate::harness::messages::{
     BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, BRANCH_SUMMARY_PREFIX,
@@ -224,6 +226,133 @@ pub fn prepare_branch_entries(
     }
 }
 
+pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String>) {
+    let modified = file_ops
+        .edited
+        .union(&file_ops.written)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let read_files = file_ops
+        .read
+        .difference(&modified)
+        .cloned()
+        .collect::<Vec<_>>();
+    let modified_files = modified.into_iter().collect::<Vec<_>>();
+    (read_files, modified_files)
+}
+
+pub fn format_file_operations(read_files: &[String], modified_files: &[String]) -> String {
+    let mut sections = Vec::new();
+    if !read_files.is_empty() {
+        sections.push(format!(
+            "<read-files>\n{}\n</read-files>",
+            read_files.join("\n")
+        ));
+    }
+    if !modified_files.is_empty() {
+        sections.push(format!(
+            "<modified-files>\n{}\n</modified-files>",
+            modified_files.join("\n")
+        ));
+    }
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", sections.join("\n\n"))
+    }
+}
+
+pub fn serialize_conversation(messages: &[RichMessage]) -> String {
+    let mut parts = Vec::new();
+    for message in messages {
+        match message {
+            RichMessage::User(user) => {
+                let content = user_content_text(&user.content);
+                if !content.is_empty() {
+                    parts.push(format!("[User]: {content}"));
+                }
+            }
+            RichMessage::Assistant(assistant) => {
+                let mut text_parts = Vec::new();
+                let mut thinking_parts = Vec::new();
+                let mut tool_calls = Vec::new();
+                for block in &assistant.content {
+                    match block {
+                        ai::AssistantContentBlock::Text(text) => text_parts.push(text.text.clone()),
+                        ai::AssistantContentBlock::Thinking(thinking) => {
+                            thinking_parts.push(thinking.thinking.clone());
+                        }
+                        ai::AssistantContentBlock::ToolCall(tool_call) => {
+                            let args = tool_call
+                                .arguments
+                                .iter()
+                                .map(|(key, value)| {
+                                    let value = serde_json::to_string(value)
+                                        .unwrap_or_else(|_| "[unserializable]".to_string());
+                                    format!("{key}={value}")
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            tool_calls.push(format!("{}({})", tool_call.name, args));
+                        }
+                    }
+                }
+                if !thinking_parts.is_empty() {
+                    parts.push(format!(
+                        "[Assistant thinking]: {}",
+                        thinking_parts.join("\n")
+                    ));
+                }
+                if !text_parts.is_empty() {
+                    parts.push(format!("[Assistant]: {}", text_parts.join("\n")));
+                }
+                if !tool_calls.is_empty() {
+                    parts.push(format!("[Assistant tool calls]: {}", tool_calls.join("; ")));
+                }
+            }
+            RichMessage::ToolResult(tool_result) => {
+                let content = tool_result
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        UserContentBlock::Text(text) => Some(text.text.as_str()),
+                        UserContentBlock::Image(_) => None,
+                    })
+                    .collect::<String>();
+                if !content.is_empty() {
+                    parts.push(format!(
+                        "[Tool result]: {}",
+                        truncate_for_summary(&content, 2000)
+                    ));
+                }
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+fn user_content_text(content: &UserMessageContent) -> String {
+    match content {
+        UserMessageContent::Text(text) => text.clone(),
+        UserMessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| match block {
+                UserContentBlock::Text(text) => Some(text.text.as_str()),
+                UserContentBlock::Image(_) => None,
+            })
+            .collect(),
+    }
+}
+
+fn truncate_for_summary(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let truncated_chars = text.chars().count() - max_chars;
+    let prefix = text.chars().take(max_chars).collect::<String>();
+    format!("{prefix}\n\n[... {truncated_chars} more characters truncated]")
+}
+
 fn collect_file_ops_from_details(
     details: Option<&serde_json::Value>,
     file_ops: &mut FileOperations,
@@ -344,7 +473,11 @@ fn compaction_summary_agent_message(message: CompactionSummaryMessage) -> AgentM
 mod tests {
     use super::*;
     use crate::harness::session::{InMemorySessionStorage, Session};
-    use ai::{AssistantContentBlock, ToolCall, Usage, UsageCost};
+    use ai::{
+        AssistantContentBlock, RichAssistantMessage, RichMessage, TextContent, ThinkingContent,
+        ToolCall, ToolResultMessage, Usage, UsageCost, UserContentBlock, UserMessage,
+        UserMessageContent,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -530,5 +663,106 @@ mod tests {
             message.role == MessageRole::Tool
                 && message.content.contains("tool output should not summarize")
         }));
+    }
+
+    #[test]
+    fn computes_and_formats_file_operations_like_pi() {
+        let file_ops = FileOperations {
+            read: BTreeMap::from([
+                ("z-read.md".to_string(), ()),
+                ("edited.md".to_string(), ()),
+                ("a-read.md".to_string(), ()),
+            ])
+            .into_keys()
+            .collect(),
+            written: BTreeMap::from([("written.md".to_string(), ())])
+                .into_keys()
+                .collect(),
+            edited: BTreeMap::from([("edited.md".to_string(), ())])
+                .into_keys()
+                .collect(),
+        };
+
+        let (read_files, modified_files) = compute_file_lists(&file_ops);
+        let formatted = format_file_operations(&read_files, &modified_files);
+
+        assert_eq!(read_files, vec!["a-read.md", "z-read.md"]);
+        assert_eq!(modified_files, vec!["edited.md", "written.md"]);
+        assert_eq!(
+            formatted,
+            "\n\n<read-files>\na-read.md\nz-read.md\n</read-files>\n\n<modified-files>\nedited.md\nwritten.md\n</modified-files>"
+        );
+    }
+
+    #[test]
+    fn serializes_rich_conversation_for_summary_like_pi() {
+        let messages = vec![
+            RichMessage::User(UserMessage {
+                content: UserMessageContent::Blocks(vec![
+                    UserContentBlock::Text(TextContent {
+                        text: "hello ".to_string(),
+                        text_signature: None,
+                    }),
+                    UserContentBlock::Text(TextContent {
+                        text: "world".to_string(),
+                        text_signature: None,
+                    }),
+                    UserContentBlock::Image(ai::ImageContent {
+                        data: "ignored".to_string(),
+                        mime_type: "image/png".to_string(),
+                    }),
+                ]),
+                timestamp_millis: 1,
+            }),
+            RichMessage::Assistant(RichAssistantMessage {
+                content: vec![
+                    AssistantContentBlock::Thinking(ThinkingContent {
+                        thinking: "plan".to_string(),
+                        thinking_signature: None,
+                        redacted: false,
+                    }),
+                    AssistantContentBlock::Text(TextContent {
+                        text: "answer".to_string(),
+                        text_signature: None,
+                    }),
+                    AssistantContentBlock::ToolCall(ToolCall {
+                        id: "call-read".to_string(),
+                        name: "read".to_string(),
+                        arguments: BTreeMap::from([("path".to_string(), json!("README.md"))]),
+                        thought_signature: None,
+                    }),
+                ],
+                api: "api".to_string(),
+                provider: "provider".to_string(),
+                model: "model".to_string(),
+                response_model: None,
+                response_id: None,
+                usage: usage(1, 1, 0, 0, 2),
+                stop_reason: AssistantStopReason::Stop,
+                error_message: None,
+                diagnostics: Vec::new(),
+                timestamp_millis: 2,
+            }),
+            RichMessage::ToolResult(ToolResultMessage {
+                tool_call_id: "call-read".to_string(),
+                tool_name: "read".to_string(),
+                content: vec![UserContentBlock::Text(TextContent {
+                    text: format!("{}tail", "x".repeat(2000)),
+                    text_signature: None,
+                })],
+                details: None,
+                is_error: false,
+                timestamp_millis: 3,
+            }),
+        ];
+
+        let serialized = serialize_conversation(&messages);
+
+        assert!(serialized.contains("[User]: hello world"));
+        assert!(serialized.contains("[Assistant thinking]: plan"));
+        assert!(serialized.contains("[Assistant]: answer"));
+        assert!(serialized.contains("[Assistant tool calls]: read(path=\"README.md\")"));
+        assert!(serialized.contains("[Tool result]: "));
+        assert!(serialized.contains("[... 4 more characters truncated]"));
     }
 }
