@@ -347,16 +347,22 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
 }
 
 fn responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
+    if responses_cache_retention(request) == Some("none") {
+        return None;
+    }
     let session_id = request.metadata.get("sessionId").and_then(Value::as_str);
     clamp_openai_prompt_cache_key(session_id)
 }
 
 fn responses_prompt_cache_retention(request: &StreamRequest) -> Option<String> {
-    let cache_retention = request
+    (responses_cache_retention(request) == Some("long")).then(|| "24h".to_string())
+}
+
+fn responses_cache_retention(request: &StreamRequest) -> Option<&str> {
+    request
         .metadata
         .get("cacheRetention")
-        .and_then(Value::as_str);
-    (cache_retention == Some("long")).then(|| "24h".to_string())
+        .and_then(Value::as_str)
 }
 
 fn responses_system_prompt_from_messages(messages: &[Message]) -> Option<String> {
@@ -888,6 +894,37 @@ mod tests {
             .expect("payload json");
 
         assert_eq!(value["prompt_cache_retention"], "24h");
+    }
+
+    #[test]
+    fn omits_responses_prompt_cache_fields_when_cache_retention_is_none_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([
+                ("sessionId".to_string(), json!("session-none")),
+                ("cacheRetention".to_string(), json!("none")),
+            ]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert!(value.get("prompt_cache_key").is_none());
+        assert!(value.get("prompt_cache_retention").is_none());
     }
 
     #[test]
