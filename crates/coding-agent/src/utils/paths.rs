@@ -24,7 +24,6 @@ pub fn is_local_path(value: &str) -> bool {
         && !trimmed.starts_with("http:")
         && !trimmed.starts_with("https:")
         && !trimmed.starts_with("ssh:")
-        && !trimmed.starts_with("git@")
 }
 
 pub fn normalize_path(input: &str, options: Option<&PathInputOptions>) -> PathBuf {
@@ -238,6 +237,7 @@ mod tests {
     fn detects_local_and_remote_sources() {
         assert!(is_local_path("./local"));
         assert!(is_local_path("file:///tmp/a"));
+        assert!(is_local_path("git@github.com:user/repo.git"));
         assert!(!is_local_path("npm:pkg"));
         assert!(!is_local_path("https://example.com/repo.git"));
     }
