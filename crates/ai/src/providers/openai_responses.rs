@@ -12,7 +12,10 @@ use crate::providers::openai_responses_shared::{
     OpenAiResponsesReasoningPart, OpenAiResponsesStreamContentPart, OpenAiResponsesStreamEvent,
     OpenAiResponsesStreamOptions,
 };
-use crate::providers::{chat_role, is_cloudflare_provider, resolve_cloudflare_base_url_from_str};
+use crate::providers::{
+    chat_role, clamp_openai_prompt_cache_key, is_cloudflare_provider,
+    resolve_cloudflare_base_url_from_str,
+};
 use crate::types::{
     validate_model, AiError, AiResult, LanguageModelProvider, Message, MessageRole, StreamEvent,
     StreamRequest, Usage, UsageCost,
@@ -215,6 +218,8 @@ struct OpenAiResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     store: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
@@ -332,9 +337,15 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
         },
         stream: true,
         store,
+        prompt_cache_key: responses_prompt_cache_key(request),
         max_output_tokens: request.model.max_tokens,
         reasoning: None,
     }
+}
+
+fn responses_prompt_cache_key(request: &StreamRequest) -> Option<String> {
+    let session_id = request.metadata.get("sessionId").and_then(Value::as_str);
+    clamp_openai_prompt_cache_key(session_id)
 }
 
 fn responses_system_prompt_from_messages(messages: &[Message]) -> Option<String> {
@@ -812,6 +823,33 @@ mod tests {
         assert!(payload.stream);
         assert_eq!(payload.store, Some(false));
         assert_eq!(payload.max_output_tokens, Some(2048));
+    }
+
+    #[test]
+    fn builds_responses_payload_prompt_cache_key_from_session_id_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("sessionId".to_string(), json!("x".repeat(67)))]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["prompt_cache_key"], "x".repeat(64));
     }
 
     #[test]
