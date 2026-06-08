@@ -6,8 +6,9 @@ use crate::conversation::{AssistantContentBlock, RichAssistantMessage, TextConte
 use crate::providers::chat_role;
 use crate::types::{
     validate_model, AiError, AiResult, AssistantStopReason, LanguageModelProvider,
-    ModelThinkingLevel, StreamEvent, StreamRequest, ToolDefinition, Usage,
+    ModelThinkingLevel, StreamEvent, StreamRequest, StreamToolCall, ToolDefinition, Usage,
 };
+use crate::utils::parse_streaming_json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -200,6 +201,23 @@ struct MistralStreamChoice {
 #[derive(Debug, Deserialize)]
 struct MistralStreamDelta {
     content: Option<Value>,
+    #[serde(default, alias = "toolCalls")]
+    tool_calls: Vec<MistralStreamToolCallDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MistralStreamToolCallDelta {
+    index: Option<usize>,
+    id: Option<String>,
+    function: MistralStreamToolCallFunctionDelta,
+}
+
+#[derive(Debug, Deserialize)]
+struct MistralStreamToolCallFunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +237,8 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
     let mut saw_finish = false;
     let mut response_id = None;
     let mut stop_reason = AssistantStopReason::Stop;
+    let mut next_content_index = 0usize;
+    let mut tool_states = Vec::<MistralToolCallStreamState>::new();
 
     for chunk in chunks {
         if response_id.is_none() {
@@ -236,6 +256,32 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
                     }
                     content.push_str(&text);
                     events.push(StreamEvent::TextDelta { text });
+                }
+                for tool_call in delta.tool_calls {
+                    let state_index = ensure_mistral_tool_call_state(
+                        &mut tool_states,
+                        &mut next_content_index,
+                        &tool_call,
+                    );
+                    let state = &mut tool_states[state_index];
+                    if let Some(name) = tool_call.function.name.filter(|name| !name.is_empty()) {
+                        state.name = name;
+                    }
+                    if state.partial_arguments.is_empty() {
+                        events.push(StreamEvent::ToolCallStart {
+                            content_index: state.content_index,
+                        });
+                    }
+                    let arguments_delta =
+                        mistral_tool_arguments_delta(tool_call.function.arguments.as_ref());
+                    if !arguments_delta.is_empty() {
+                        state.partial_arguments.push_str(&arguments_delta);
+                        events.push(StreamEvent::ToolCallDelta {
+                            content_index: state.content_index,
+                            delta: arguments_delta,
+                        });
+                    }
+                    stop_reason = AssistantStopReason::ToolUse;
                 }
             }
         }
@@ -257,7 +303,19 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
         }
     }
 
-    if content.is_empty() {
+    for state in &tool_states {
+        events.push(StreamEvent::ToolCallEnd {
+            content_index: state.content_index,
+            tool_call: StreamToolCall {
+                id: state.id.clone(),
+                name: state.name.clone(),
+                arguments: parse_mistral_tool_arguments(&state.partial_arguments),
+                thought_signature: None,
+            },
+        });
+    }
+
+    if content.is_empty() && tool_states.is_empty() {
         return Err("Mistral 输出文本缺失".to_string());
     }
     if !saw_finish {
@@ -284,6 +342,15 @@ fn mistral_sse_text_to_stream_events(input: &str) -> Result<Vec<StreamEvent>, St
     Ok(events)
 }
 
+#[derive(Debug)]
+struct MistralToolCallStreamState {
+    stream_index: Option<usize>,
+    id: String,
+    name: String,
+    content_index: usize,
+    partial_arguments: String,
+}
+
 fn map_mistral_chat_stop_reason(reason: &str) -> AssistantStopReason {
     match reason {
         "stop" => AssistantStopReason::Stop,
@@ -291,6 +358,68 @@ fn map_mistral_chat_stop_reason(reason: &str) -> AssistantStopReason {
         "tool_calls" => AssistantStopReason::ToolUse,
         "error" => AssistantStopReason::Error,
         _ => AssistantStopReason::Stop,
+    }
+}
+
+fn ensure_mistral_tool_call_state(
+    tool_states: &mut Vec<MistralToolCallStreamState>,
+    next_content_index: &mut usize,
+    tool_call: &MistralStreamToolCallDelta,
+) -> usize {
+    if let Some(index) = tool_call.index {
+        if let Some((position, _)) = tool_states
+            .iter()
+            .enumerate()
+            .find(|(_, state)| state.stream_index == Some(index))
+        {
+            return position;
+        }
+    }
+    if let Some(id) = tool_call
+        .id
+        .as_deref()
+        .filter(|id| !id.is_empty() && *id != "null")
+    {
+        if let Some((position, _)) = tool_states
+            .iter()
+            .enumerate()
+            .find(|(_, state)| state.id == id)
+        {
+            return position;
+        }
+    }
+
+    let id = tool_call
+        .id
+        .as_deref()
+        .filter(|id| !id.is_empty() && *id != "null")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("toolcall_{}", tool_call.index.unwrap_or(tool_states.len())));
+    let name = tool_call.function.name.clone().unwrap_or_default();
+    let content_index = *next_content_index;
+    *next_content_index += 1;
+    tool_states.push(MistralToolCallStreamState {
+        stream_index: tool_call.index,
+        id,
+        name,
+        content_index,
+        partial_arguments: String::new(),
+    });
+    tool_states.len() - 1
+}
+
+fn mistral_tool_arguments_delta(arguments: Option<&Value>) -> String {
+    match arguments {
+        Some(Value::String(value)) => value.clone(),
+        Some(value) => serde_json::to_string(value).unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+fn parse_mistral_tool_arguments(arguments: &str) -> std::collections::BTreeMap<String, Value> {
+    match parse_streaming_json(Some(arguments)) {
+        Value::Object(map) => map.into_iter().collect(),
+        _ => Default::default(),
     }
 }
 
@@ -478,6 +607,49 @@ mod tests {
         let events = mistral_sse_text_to_stream_events(sse).expect("sse should parse");
         let stream = crate::provider_events_to_stream(events).expect("stream");
 
+        assert_eq!(
+            stream.result().map(|message| message.stop_reason.clone()),
+            Some(AssistantStopReason::ToolUse)
+        );
+    }
+
+    #[test]
+    fn mistral_stream_accumulates_tool_calls_like_pi() {
+        let sse = "data: {\"id\":\"cmpl_tool_1\",\"choices\":[{\"delta\":{\"toolCalls\":[{\"index\":0,\"id\":\"call_read\",\"function\":{\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"README\"}}]},\"finish_reason\":null}]}\n\n\
+                   data: {\"id\":\"cmpl_tool_1\",\"choices\":[{\"delta\":{\"toolCalls\":[{\"index\":0,\"id\":\"call_read\",\"function\":{\"arguments\":\".md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n";
+
+        let events = mistral_sse_text_to_stream_events(sse).expect("sse should parse");
+
+        assert!(matches!(
+            &events[0],
+            StreamEvent::ToolCallStart { content_index } if *content_index == 0
+        ));
+        assert!(matches!(
+            &events[1],
+            StreamEvent::ToolCallDelta {
+                content_index,
+                delta,
+            } if *content_index == 0 && delta == "{\"path\":\"README"
+        ));
+        assert!(matches!(
+            &events[2],
+            StreamEvent::ToolCallDelta {
+                content_index,
+                delta,
+            } if *content_index == 0 && delta == ".md\"}"
+        ));
+        assert!(matches!(
+            &events[3],
+            StreamEvent::ToolCallEnd {
+                content_index,
+                tool_call,
+            } if *content_index == 0
+                && tool_call.id == "call_read"
+                && tool_call.name == "read"
+                && tool_call.arguments["path"] == serde_json::json!("README.md")
+        ));
+
+        let stream = crate::provider_events_to_stream(events).expect("stream");
         assert_eq!(
             stream.result().map(|message| message.stop_reason.clone()),
             Some(AssistantStopReason::ToolUse)
