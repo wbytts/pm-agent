@@ -126,6 +126,7 @@ struct AnthropicRequest {
 
 impl AnthropicRequest {
     fn from_stream_request(request: StreamRequest, max_tokens: u32, is_oauth_token: bool) -> Self {
+        let tool_cache_control = anthropic_tool_cache_control(&request);
         let mut system = Vec::new();
         let mut simple_messages = Vec::new();
         for message in request.messages {
@@ -155,6 +156,7 @@ impl AnthropicRequest {
             &request.tools,
             is_oauth_token,
             anthropic_supports_eager_tool_input_streaming(&request.model),
+            tool_cache_control,
         );
 
         Self {
@@ -243,6 +245,15 @@ struct AnthropicTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     eager_input_streaming: Option<bool>,
     input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct AnthropicCacheControl {
+    r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ttl: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1106,14 +1117,17 @@ fn convert_anthropic_tools(
     tools: &[ToolDefinition],
     is_oauth_token: bool,
     supports_eager_tool_input_streaming: bool,
+    cache_control: Option<AnthropicCacheControl>,
 ) -> Option<Vec<AnthropicTool>> {
     if tools.is_empty() {
         return None;
     }
+    let last_tool_index = tools.len() - 1;
     Some(
         tools
             .iter()
-            .map(|tool| {
+            .enumerate()
+            .map(|(index, tool)| {
                 let properties = tool
                     .parameters
                     .get("properties")
@@ -1137,6 +1151,9 @@ fn convert_anthropic_tools(
                         "properties": properties,
                         "required": required,
                     }),
+                    cache_control: (index == last_tool_index)
+                        .then(|| cache_control.clone())
+                        .flatten(),
                 }
             })
             .collect(),
@@ -1194,6 +1211,45 @@ fn anthropic_supports_eager_tool_input_streaming(model: &crate::types::Model) ->
         .get("supportsEagerToolInputStreaming")
         .and_then(Value::as_bool)
         .unwrap_or(true)
+}
+
+fn anthropic_tool_cache_control(request: &StreamRequest) -> Option<AnthropicCacheControl> {
+    let supports_cache_control_on_tools = request
+        .model
+        .compat
+        .get("supportsCacheControlOnTools")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if !supports_cache_control_on_tools {
+        return None;
+    }
+
+    let cache_retention = request
+        .metadata
+        .get("cacheRetention")
+        .and_then(Value::as_str)
+        .unwrap_or("short");
+    if cache_retention == "none" {
+        return None;
+    }
+
+    let ttl = if cache_retention == "long"
+        && request
+            .model
+            .compat
+            .get("supportsLongCacheRetention")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    {
+        Some("1h".to_string())
+    } else {
+        None
+    };
+
+    Some(AnthropicCacheControl {
+        r#type: "ephemeral".to_string(),
+        ttl,
+    })
 }
 
 fn anthropic_beta_header_for_request(request: &StreamRequest) -> Option<&'static str> {
@@ -2076,6 +2132,179 @@ mod tests {
     }
 
     #[test]
+    fn builds_anthropic_tools_with_cache_control_on_last_native_tool_like_pi() {
+        let payload = AnthropicRequest::from_stream_request(
+            StreamRequest {
+                model: Model {
+                    id: "claude-opus-4-7".to_string(),
+                    provider: "anthropic".to_string(),
+                    api: "anthropic-messages".to_string(),
+                    display_name: "Claude Opus 4.7".to_string(),
+                    ..Model::default()
+                },
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Use the tools".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: vec![
+                    crate::types::ToolDefinition {
+                        name: "lookup".to_string(),
+                        description: "Look up a value".to_string(),
+                        parameters: serde_json::json!({"type": "object"}),
+                    },
+                    crate::types::ToolDefinition {
+                        name: "write".to_string(),
+                        description: "Write a value".to_string(),
+                        parameters: serde_json::json!({"type": "object"}),
+                    },
+                ],
+                metadata: Default::default(),
+            },
+            4096,
+            false,
+        );
+
+        let tools = payload.tools.expect("tools");
+        let value = serde_json::to_value(&tools).expect("tools json");
+        assert!(value[0].get("cache_control").is_none());
+        assert_eq!(value[1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn omits_anthropic_tool_cache_control_when_retention_none_like_pi() {
+        let payload = AnthropicRequest::from_stream_request(
+            StreamRequest {
+                model: Model {
+                    id: "claude-opus-4-7".to_string(),
+                    provider: "anthropic".to_string(),
+                    api: "anthropic-messages".to_string(),
+                    display_name: "Claude Opus 4.7".to_string(),
+                    ..Model::default()
+                },
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Use the tool".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: vec![crate::types::ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: "Look up a value".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }],
+                metadata: BTreeMap::from([("cacheRetention".to_string(), json!("none"))]),
+            },
+            4096,
+            false,
+        );
+
+        let tools = payload.tools.expect("tools");
+        let value = serde_json::to_value(&tools).expect("tools json");
+        assert!(value[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn omits_anthropic_tool_cache_control_when_model_compat_disables_it_like_pi() {
+        let mut model = Model {
+            id: "accounts/fireworks/models/kimi-k2p6".to_string(),
+            provider: "fireworks".to_string(),
+            api: "anthropic-messages".to_string(),
+            display_name: "Kimi K2.6".to_string(),
+            ..Model::default()
+        };
+        model.compat.insert(
+            "supportsCacheControlOnTools".to_string(),
+            serde_json::json!(false),
+        );
+
+        let payload = AnthropicRequest::from_stream_request(
+            StreamRequest {
+                model,
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Use the tool".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: vec![crate::types::ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: "Look up a value".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }],
+                metadata: Default::default(),
+            },
+            4096,
+            false,
+        );
+
+        let tools = payload.tools.expect("tools");
+        let value = serde_json::to_value(&tools).expect("tools json");
+        assert!(value[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn uses_long_anthropic_tool_cache_ttl_only_when_supported_like_pi() {
+        let mut model = Model {
+            id: "claude-opus-4-7".to_string(),
+            provider: "anthropic".to_string(),
+            api: "anthropic-messages".to_string(),
+            display_name: "Claude Opus 4.7".to_string(),
+            ..Model::default()
+        };
+        model.compat.insert(
+            "supportsLongCacheRetention".to_string(),
+            serde_json::json!(true),
+        );
+
+        let payload = AnthropicRequest::from_stream_request(
+            StreamRequest {
+                model: model.clone(),
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Use the tool".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: vec![crate::types::ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: "Look up a value".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }],
+                metadata: BTreeMap::from([("cacheRetention".to_string(), json!("long"))]),
+            },
+            4096,
+            false,
+        );
+        let tools = payload.tools.expect("tools");
+        let value = serde_json::to_value(&tools).expect("tools json");
+        assert_eq!(value[0]["cache_control"]["ttl"], "1h");
+
+        model.compat.insert(
+            "supportsLongCacheRetention".to_string(),
+            serde_json::json!(false),
+        );
+        let payload = AnthropicRequest::from_stream_request(
+            StreamRequest {
+                model,
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "Use the tool".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: vec![crate::types::ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: "Look up a value".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                }],
+                metadata: BTreeMap::from([("cacheRetention".to_string(), json!("long"))]),
+            },
+            4096,
+            false,
+        );
+        let tools = payload.tools.expect("tools");
+        let value = serde_json::to_value(&tools).expect("tools json");
+        assert!(value[0]["cache_control"].get("ttl").is_none());
+    }
+
+    #[test]
     fn builds_legacy_fine_grained_beta_when_eager_tool_input_is_disabled_like_pi() {
         let mut model = Model {
             id: "claude-opus-4-7".to_string(),
@@ -2166,7 +2395,7 @@ mod tests {
             },
         ];
 
-        let converted = convert_anthropic_tools(&tools, true, true).expect("tools");
+        let converted = convert_anthropic_tools(&tools, true, true, None).expect("tools");
 
         assert_eq!(converted[0].name, "TodoWrite");
         assert_eq!(converted[1].name, "Read");
