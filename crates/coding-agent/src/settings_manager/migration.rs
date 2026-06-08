@@ -228,6 +228,30 @@ pub fn migrate_sessions_from_agent_root(agent_dir: impl AsRef<Path>) -> Result<u
     Ok(migrated)
 }
 
+pub fn deprecated_extension_dir_warnings(
+    base_dir: impl AsRef<Path>,
+    label: &str,
+) -> Result<Vec<String>, String> {
+    let base_dir = base_dir.as_ref();
+    let hooks_dir = base_dir.join("hooks");
+    let tools_dir = base_dir.join("tools");
+    let mut warnings = Vec::new();
+
+    if hooks_dir.exists() {
+        warnings.push(format!(
+            "{label} hooks/ directory found. Hooks have been renamed to extensions."
+        ));
+    }
+
+    if tools_dir.exists() && tools_dir_has_custom_entries(&tools_dir)? {
+        warnings.push(format!(
+            "{label} tools/ directory contains custom tools. Custom tools have been merged into extensions."
+        ));
+    }
+
+    Ok(warnings)
+}
+
 fn migrate_legacy_skills(object: &mut Map<String, Value>) {
     let Some(skills) = object.get("skills") else {
         return;
@@ -329,6 +353,31 @@ fn encoded_session_dir(cwd: &str) -> String {
     let trimmed = cwd.trim_start_matches(['/', '\\']);
     let safe = trimmed.replace(['/', '\\', ':'], "-");
     format!("--{safe}--")
+}
+
+fn tools_dir_has_custom_entries(path: &Path) -> Result<bool, String> {
+    let entries = fs::read_dir(path)
+        .map_err(|error| format!("读取 tools 目录 {} 失败：{error}", path.display()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("读取 tools 目录项 {} 失败：{error}", path.display()))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        if !is_managed_tool_name(&name) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn is_managed_tool_name(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "fd" | "rg" | "fd.exe" | "rg.exe"
+    )
 }
 
 pub(super) fn object_mut(value: &mut Value) -> &mut Map<String, Value> {

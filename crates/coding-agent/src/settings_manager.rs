@@ -9,8 +9,9 @@ mod types;
 
 pub use merge::deep_merge_settings;
 pub use migration::{
-    migrate_auth_to_auth_json, migrate_commands_to_prompts, migrate_keybindings_config_file,
-    migrate_sessions_from_agent_root, migrate_settings, migrate_tools_to_bin,
+    deprecated_extension_dir_warnings, migrate_auth_to_auth_json, migrate_commands_to_prompts,
+    migrate_keybindings_config_file, migrate_sessions_from_agent_root, migrate_settings,
+    migrate_tools_to_bin,
 };
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
@@ -852,6 +853,42 @@ mod tests {
                 .expect("existing target should remain"),
             "existing"
         );
+    }
+
+    #[test]
+    fn reports_deprecated_hooks_and_custom_tools_like_pi() {
+        let dir = temp_dir("deprecated-extension-dirs");
+        std::fs::create_dir_all(dir.join("hooks")).expect("hooks dir should be created");
+        std::fs::create_dir_all(dir.join("tools")).expect("tools dir should be created");
+        std::fs::write(dir.join("tools").join("fd"), "").expect("fd should be written");
+        std::fs::write(dir.join("tools").join(".DS_Store"), "").expect("hidden should be written");
+        std::fs::write(dir.join("tools").join("deploy"), "").expect("custom should be written");
+
+        let warnings =
+            deprecated_extension_dir_warnings(&dir, "Global").expect("warnings should collect");
+
+        assert_eq!(
+            warnings,
+            vec![
+                "Global hooks/ directory found. Hooks have been renamed to extensions."
+                    .to_string(),
+                "Global tools/ directory contains custom tools. Custom tools have been merged into extensions."
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_managed_and_hidden_tools_for_deprecated_warning_like_pi() {
+        let dir = temp_dir("deprecated-managed-tools");
+        std::fs::create_dir_all(dir.join("tools")).expect("tools dir should be created");
+        for name in ["fd", "rg", "fd.exe", "rg.exe", ".DS_Store"] {
+            std::fs::write(dir.join("tools").join(name), "").expect("tool should be written");
+        }
+
+        assert!(deprecated_extension_dir_warnings(&dir, "Project")
+            .expect("warnings should collect")
+            .is_empty());
     }
 
     #[test]
