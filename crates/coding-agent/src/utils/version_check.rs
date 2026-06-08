@@ -109,18 +109,27 @@ pub fn check_for_new_pi_version(current_version: &str) -> Option<LatestPiRelease
 }
 
 fn parse_package_version(version: &str) -> Option<ParsedVersion> {
-    let version = version.trim().trim_start_matches('v');
+    let version = version.trim();
+    let version = version.strip_prefix('v').unwrap_or(version);
     let (version, _) = version.split_once('+').unwrap_or((version, ""));
-    let (core, prerelease) = version
-        .split_once('-')
-        .map_or((version, None), |(core, prerelease)| {
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, prerelease)) => {
+            if prerelease.is_empty()
+                || !prerelease
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-')
+            {
+                return None;
+            }
             (core, Some(prerelease.to_string()))
-        });
+        }
+        None => (version, None),
+    };
     let mut parts = core.split('.');
 
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next()?.parse().ok()?;
-    let patch = parts.next()?.parse().ok()?;
+    let major = parse_version_number(parts.next()?)?;
+    let minor = parse_version_number(parts.next()?)?;
+    let patch = parse_version_number(parts.next()?)?;
     if parts.next().is_some() {
         return None;
     }
@@ -131,6 +140,13 @@ fn parse_package_version(version: &str) -> Option<ParsedVersion> {
         patch,
         prerelease,
     })
+}
+
+fn parse_version_number(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 fn compare_prerelease(left: Option<&str>, right: Option<&str>) -> Ordering {
@@ -180,6 +196,14 @@ mod tests {
             Some(Ordering::Equal)
         );
         assert_eq!(compare_package_versions("bad", "1.2.3"), None);
+    }
+
+    #[test]
+    fn rejects_invalid_package_version_shapes_like_pi_regex() {
+        assert_eq!(compare_package_versions("1.2.3-", "1.2.3"), None);
+        assert_eq!(compare_package_versions("vv1.2.3", "1.2.3"), None);
+        assert!(is_newer_package_version("1.2.3-", "1.2.3"));
+        assert!(is_newer_package_version("vv1.2.3", "1.2.3"));
     }
 
     #[test]
