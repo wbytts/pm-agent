@@ -245,7 +245,7 @@ struct OpenAiResponsesToolDefinition {
     name: String,
     description: String,
     parameters: Value,
-    strict: bool,
+    strict: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -424,6 +424,7 @@ fn build_codex_responses_payload(request: &StreamRequest) -> OpenAiResponsesPayl
         prompt_cache_key: azure_responses_prompt_cache_key(request),
         tool_choice: Some("auto".to_string()),
         parallel_tool_calls: Some(true),
+        tools: convert_codex_responses_tools(&request.tools),
         ..build_responses_payload(request, Some(false))
     }
 }
@@ -516,7 +517,24 @@ fn convert_responses_tools(tools: &[ToolDefinition]) -> Option<Vec<OpenAiRespons
                 name: tool.name.clone(),
                 description: tool.description.clone(),
                 parameters: tool.parameters.clone(),
-                strict: false,
+                strict: Some(false),
+            })
+            .collect()
+    })
+}
+
+fn convert_codex_responses_tools(
+    tools: &[ToolDefinition],
+) -> Option<Vec<OpenAiResponsesToolDefinition>> {
+    (!tools.is_empty()).then(|| {
+        tools
+            .iter()
+            .map(|tool| OpenAiResponsesToolDefinition {
+                r#type: "function".to_string(),
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+                strict: None,
             })
             .collect()
     })
@@ -1107,6 +1125,42 @@ mod tests {
             .expect("input")
             .iter()
             .all(|item| item["role"] != "system"));
+    }
+
+    #[test]
+    fn builds_codex_responses_tools_with_null_strict_like_pi() {
+        let model = Model {
+            id: "gpt-5-codex".to_string(),
+            provider: "openai-codex".to_string(),
+            api: "openai-codex-responses".to_string(),
+            display_name: "GPT-5 Codex".to_string(),
+            context_window: 128_000,
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: vec![ToolDefinition {
+                name: "lookup".to_string(),
+                description: "Look up a value".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    }
+                }),
+            }],
+            metadata: Default::default(),
+        };
+
+        let value =
+            serde_json::to_value(build_codex_responses_payload(&request)).expect("payload json");
+
+        assert_eq!(value["tools"][0]["strict"], Value::Null);
     }
 
     #[test]
