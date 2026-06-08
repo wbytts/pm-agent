@@ -29,7 +29,7 @@ fn ansi_sequence_len(value: &str, pos: usize) -> Option<usize> {
         0x1b => match *bytes.get(pos + 1)? {
             b']' => osc_sequence_len(bytes, pos),
             b'[' | b'(' | b')' | b'#' | b';' | b'?' => csi_sequence_len(bytes, pos),
-            _ => csi_sequence_len(bytes, pos),
+            _ => None,
         },
         0x9b => csi_sequence_len(bytes, pos),
         _ => None,
@@ -73,6 +73,11 @@ mod tests {
             strip_ansi("\x1b]8;;https://example.com\x07link\x1b]8;;\x07"),
             "link"
         );
+    }
+
+    #[test]
+    fn preserves_unsupported_escape_sequences_like_pi_regex() {
+        assert_eq!(strip_ansi("\x1bXplain"), "\x1bXplain");
     }
 
     #[test]
