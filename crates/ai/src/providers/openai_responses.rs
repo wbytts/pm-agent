@@ -230,6 +230,8 @@ struct OpenAiResponsesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAiResponsesToolDefinition>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
 }
 
@@ -364,6 +366,7 @@ fn build_responses_payload(request: &StreamRequest, store: Option<bool>) -> Open
             .and_then(Value::as_str)
             .map(str::to_string),
         tools: convert_responses_tools(&request.tools),
+        include: responses_include(request),
         reasoning: responses_reasoning(request),
     }
 }
@@ -377,6 +380,12 @@ fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
     {
         return None;
     }
+    if let Some(effort) = responses_requested_reasoning_effort(request) {
+        return Some(json!({
+            "effort": effort,
+            "summary": "auto",
+        }));
+    }
     let off_effort = match request
         .model
         .thinking_level_map
@@ -387,6 +396,47 @@ fn responses_reasoning(request: &StreamRequest) -> Option<Value> {
         None => "none",
     };
     Some(json!({ "effort": off_effort }))
+}
+
+fn responses_include(request: &StreamRequest) -> Option<Vec<String>> {
+    responses_requested_reasoning_effort(request)
+        .map(|_| vec!["reasoning.encrypted_content".to_string()])
+}
+
+fn responses_requested_reasoning_effort(request: &StreamRequest) -> Option<String> {
+    let level = request.metadata.get("reasoning").and_then(Value::as_str)?;
+    let mapped = match level {
+        "off" => request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::Off),
+        "minimal" => request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::Minimal),
+        "low" => request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::Low),
+        "medium" => request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::Medium),
+        "high" => request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::High),
+        "xhigh" => request
+            .model
+            .thinking_level_map
+            .get(&ModelThinkingLevel::XHigh),
+        _ => None,
+    };
+    match mapped {
+        Some(Some(value)) => Some(value.clone()),
+        Some(None) => None,
+        None => Some(level.to_string()),
+    }
 }
 
 fn convert_responses_tools(tools: &[ToolDefinition]) -> Option<Vec<OpenAiResponsesToolDefinition>> {
@@ -1139,6 +1189,36 @@ mod tests {
             .expect("payload json");
 
         assert!(value.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn builds_responses_payload_requested_reasoning_like_pi() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            api: "openai-responses".to_string(),
+            display_name: "GPT-5".to_string(),
+            context_window: 128_000,
+            reasoning: Some(crate::types::ModelReasoning { enabled: true }),
+            ..Model::default()
+        };
+        let request = StreamRequest {
+            model,
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: "hello".to_string(),
+            }],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: BTreeMap::from([("reasoning".to_string(), json!("high"))]),
+        };
+
+        let value = serde_json::to_value(build_responses_payload(&request, Some(false)))
+            .expect("payload json");
+
+        assert_eq!(value["reasoning"]["effort"], "high");
+        assert_eq!(value["reasoning"]["summary"], "auto");
+        assert_eq!(value["include"][0], "reasoning.encrypted_content");
     }
 
     #[test]
