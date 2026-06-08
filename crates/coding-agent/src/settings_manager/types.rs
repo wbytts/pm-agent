@@ -98,6 +98,12 @@ pub struct ImageSettings {
     pub block_images: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WarningSettings {
+    pub anthropic_extra_usage: Option<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsScope {
     Global,

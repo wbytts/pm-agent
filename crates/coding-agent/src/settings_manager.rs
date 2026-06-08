@@ -12,7 +12,7 @@ pub use migration::migrate_settings;
 pub use storage::{FileSettingsStorage, InMemorySettingsStorage, SettingsStorage, CONFIG_DIR_NAME};
 pub use types::{
     BranchSummarySettings, CompactionSettings, ImageSettings, ProviderRetrySettings, RetrySettings,
-    Settings, SettingsError, SettingsScope, TerminalSettings,
+    Settings, SettingsError, SettingsScope, TerminalSettings, WarningSettings,
 };
 
 pub struct SettingsManager<S: SettingsStorage> {
@@ -341,6 +341,68 @@ impl<S: SettingsStorage> SettingsManager<S> {
         }
     }
 
+    pub fn get_show_hardware_cursor(&self) -> bool {
+        self.get_bool("showHardwareCursor")
+            .unwrap_or_else(|| std::env::var("PI_HARDWARE_CURSOR").is_ok_and(|value| value == "1"))
+    }
+
+    pub fn set_show_hardware_cursor(&mut self, enabled: bool) {
+        self.set_global("showHardwareCursor", Value::Bool(enabled));
+        self.save_scope(SettingsScope::Global);
+    }
+
+    pub fn get_editor_padding_x(&self) -> i64 {
+        self.settings
+            .get("editorPaddingX")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    }
+
+    pub fn set_editor_padding_x(&mut self, padding: i64) {
+        self.set_global("editorPaddingX", Value::from(padding.clamp(0, 3)));
+        self.save_scope(SettingsScope::Global);
+    }
+
+    pub fn get_autocomplete_max_visible(&self) -> i64 {
+        self.settings
+            .get("autocompleteMaxVisible")
+            .and_then(Value::as_i64)
+            .unwrap_or(5)
+    }
+
+    pub fn set_autocomplete_max_visible(&mut self, max_visible: i64) {
+        self.set_global(
+            "autocompleteMaxVisible",
+            Value::from(max_visible.clamp(3, 20)),
+        );
+        self.save_scope(SettingsScope::Global);
+    }
+
+    pub fn get_code_block_indent(&self) -> String {
+        self.settings
+            .get("markdown")
+            .and_then(|value| value.get("codeBlockIndent"))
+            .and_then(Value::as_str)
+            .unwrap_or("  ")
+            .to_string()
+    }
+
+    pub fn get_warnings(&self) -> WarningSettings {
+        self.settings
+            .get("warnings")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_warnings(&mut self, warnings: WarningSettings) {
+        self.set_global(
+            "warnings",
+            serde_json::to_value(warnings).expect("warning settings should encode"),
+        );
+        self.save_scope(SettingsScope::Global);
+    }
+
     fn load_scope(&mut self, scope: SettingsScope) -> Value {
         match self.storage.read(scope) {
             Ok(Some(content)) => serde_json::from_str::<Value>(&content)
@@ -573,5 +635,86 @@ mod tests {
                 None => std::env::remove_var("PI_CLEAR_ON_SHRINK"),
             }
         }
+    }
+
+    #[test]
+    fn ui_tuning_getters_match_pi_settings_defaults_and_overrides() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        let previous = std::env::var_os("PI_HARDWARE_CURSOR");
+        unsafe {
+            std::env::remove_var("PI_HARDWARE_CURSOR");
+        }
+
+        let manager = SettingsManager::in_memory(json!({}));
+        assert!(!manager.get_show_hardware_cursor());
+        assert_eq!(manager.get_editor_padding_x(), 0);
+        assert_eq!(manager.get_autocomplete_max_visible(), 5);
+        assert_eq!(manager.get_code_block_indent(), "  ");
+        assert_eq!(manager.get_warnings().anthropic_extra_usage, None);
+
+        let manager = SettingsManager::in_memory(json!({
+            "showHardwareCursor": true,
+            "editorPaddingX": 9,
+            "autocompleteMaxVisible": 1,
+            "markdown": {
+                "codeBlockIndent": "\t"
+            },
+            "warnings": {
+                "anthropicExtraUsage": false
+            }
+        }));
+        assert!(manager.get_show_hardware_cursor());
+        assert_eq!(manager.get_editor_padding_x(), 9);
+        assert_eq!(manager.get_autocomplete_max_visible(), 1);
+        assert_eq!(manager.get_code_block_indent(), "\t");
+        assert_eq!(manager.get_warnings().anthropic_extra_usage, Some(false));
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PI_HARDWARE_CURSOR", value),
+                None => std::env::remove_var("PI_HARDWARE_CURSOR"),
+            }
+        }
+    }
+
+    #[test]
+    fn hardware_cursor_falls_back_to_pi_env_like_pi_settings() {
+        let _guard = env_lock().lock().expect("env lock should not be poisoned");
+        let previous = std::env::var_os("PI_HARDWARE_CURSOR");
+        unsafe {
+            std::env::set_var("PI_HARDWARE_CURSOR", "1");
+        }
+
+        let manager = SettingsManager::in_memory(json!({}));
+        assert!(manager.get_show_hardware_cursor());
+
+        let manager = SettingsManager::in_memory(json!({
+            "showHardwareCursor": false
+        }));
+        assert!(!manager.get_show_hardware_cursor());
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("PI_HARDWARE_CURSOR", value),
+                None => std::env::remove_var("PI_HARDWARE_CURSOR"),
+            }
+        }
+    }
+
+    #[test]
+    fn ui_tuning_setters_clamp_values_like_pi_settings() {
+        let mut manager = SettingsManager::in_memory(json!({}));
+
+        manager.set_show_hardware_cursor(true);
+        manager.set_editor_padding_x(9);
+        manager.set_autocomplete_max_visible(1);
+        manager.set_warnings(WarningSettings {
+            anthropic_extra_usage: Some(false),
+        });
+
+        assert!(manager.get_show_hardware_cursor());
+        assert_eq!(manager.get_editor_padding_x(), 3);
+        assert_eq!(manager.get_autocomplete_max_visible(), 3);
+        assert_eq!(manager.get_warnings().anthropic_extra_usage, Some(false));
     }
 }
