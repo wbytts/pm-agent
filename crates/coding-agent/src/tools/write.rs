@@ -9,7 +9,8 @@ pub fn write_file(
     path: String,
     content: String,
 ) -> CodingAgentResult<CodingToolResult> {
-    let path = resolve_workspace_path(workspace, &path)?;
+    let input_path = path;
+    let path = resolve_workspace_path(workspace, &input_path)?;
     with_file_mutation_queue(&path, || {
         let byte_count = content.len();
         if let Some(parent) = path.parent() {
@@ -22,10 +23,7 @@ pub fn write_file(
         })?;
         Ok(CodingToolResult {
             success: true,
-            output: format!(
-                "Successfully wrote {byte_count} bytes to {}",
-                path.display()
-            ),
+            output: format!("Successfully wrote {byte_count} bytes to {input_path}"),
             details: None,
             content: None,
         })

@@ -216,6 +216,28 @@ fn ls_resolves_pi_path_input_variants_inside_workspace() {
 }
 
 #[test]
+fn write_reports_original_path_like_pi_after_path_normalization() {
+    let workspace = temp_workspace();
+    let write = execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "@space\u{00a0}name/file.txt".to_string(),
+            content: "ok".to_string(),
+        },
+    )
+    .expect("write should work");
+
+    assert_eq!(
+        fs::read_to_string(workspace.cwd.join("space name/file.txt")).expect("file should exist"),
+        "ok"
+    );
+    assert_eq!(
+        write.output,
+        "Successfully wrote 2 bytes to @space\u{00a0}name/file.txt"
+    );
+}
+
+#[test]
 fn read_truncates_large_text_outputs() {
     let workspace = temp_workspace();
     let content = (0..2100)
