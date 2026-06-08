@@ -110,7 +110,7 @@ pub fn parse_args(args: &[String]) -> CliArgs {
                 assign_value(args, &mut index, |value| result.session_dir = Some(value))
             }
             "--models" => assign_value(args, &mut index, |value| {
-                result.models = split_csv(&value);
+                result.models = split_csv_preserve_empty(&value);
             }),
             "--no-tools" | "-nt" => result.no_tools = true,
             "--no-builtin-tools" | "-nbt" => result.no_builtin_tools = true,
@@ -221,6 +221,14 @@ fn split_csv(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn split_csv_preserve_empty(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn assign_value(args: &[String], index: &mut usize, mut assign: impl FnMut(String)) {
     if let Some(value) = take_value(args, index) {
         assign(value.to_string());
@@ -320,6 +328,13 @@ mod tests {
         assert_eq!(args.thinking, None);
         assert_eq!(args.diagnostics.len(), 1);
         assert_eq!(args.diagnostics[0].r#type, CliDiagnosticType::Warning);
+    }
+
+    #[test]
+    fn models_csv_preserves_empty_entries_like_pi() {
+        let args = parse(&["--models", "sonnet,, haiku"]);
+
+        assert_eq!(args.models, vec!["sonnet", "", "haiku"]);
     }
 
     #[test]
