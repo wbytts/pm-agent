@@ -66,8 +66,16 @@ impl<S: SettingsStorage> SettingsManager<S> {
         value_to_settings(&self.global_settings)
     }
 
+    pub fn get_global_settings(&self) -> Settings {
+        self.global_settings()
+    }
+
     pub fn project_settings(&self) -> Settings {
         value_to_settings(&self.project_settings)
+    }
+
+    pub fn get_project_settings(&self) -> Settings {
+        self.project_settings()
     }
 
     pub fn settings(&self) -> Settings {
@@ -1161,6 +1169,41 @@ mod tests {
         let manager = SettingsManager::from_storage(storage);
         assert_eq!(manager.get_default_provider().as_deref(), Some("openai"));
         assert_eq!(manager.get_compaction_settings(), (false, 10, 20_000));
+    }
+
+    #[test]
+    fn scope_settings_getters_match_pi_settings_manager_names() {
+        let mut storage = InMemorySettingsStorage::new();
+        storage
+            .write(
+                SettingsScope::Global,
+                json!({
+                    "defaultProvider": "openai",
+                    "theme": "dark"
+                })
+                .to_string(),
+            )
+            .expect("global write should work");
+        storage
+            .write(
+                SettingsScope::Project,
+                json!({
+                    "defaultModel": "gpt-5"
+                })
+                .to_string(),
+            )
+            .expect("project write should work");
+
+        let manager = SettingsManager::from_storage(storage);
+
+        assert_eq!(
+            manager.get_global_settings().default_provider.as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            manager.get_project_settings().default_model.as_deref(),
+            Some("gpt-5")
+        );
     }
 
     #[test]
