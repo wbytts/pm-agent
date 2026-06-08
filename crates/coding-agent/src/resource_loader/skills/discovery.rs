@@ -8,6 +8,10 @@ use super::load_skill_file;
 use crate::diagnostics::ResourceDiagnostic;
 
 pub fn load_skills_from_dir(dir: &Path) -> (Vec<Skill>, Vec<ResourceDiagnostic>) {
+    if !dir.exists() {
+        return (Vec::new(), Vec::new());
+    }
+
     let mut skills = Vec::new();
     let mut diagnostics = Vec::new();
     let mut ignore_rules = IgnoreRules::default();
@@ -20,6 +24,25 @@ pub fn load_skills_from_dir(dir: &Path) -> (Vec<Skill>, Vec<ResourceDiagnostic>)
         &mut diagnostics,
     );
     (skills, diagnostics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonexistent_directory_returns_empty_like_pi_load_skills_from_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "pm-agent-missing-skills-dir-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (skills, diagnostics) = load_skills_from_dir(&dir);
+
+        assert!(skills.is_empty());
+        assert!(diagnostics.is_empty());
+    }
 }
 
 fn load_skills_from_dir_internal(
