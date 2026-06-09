@@ -1,6 +1,8 @@
 use ai::{
-    AssistantStopReason, MessageRole, RichMessage, Usage, UserContentBlock, UserMessageContent,
+    AssistantStopReason, LanguageModelProvider, Message, MessageRole, Model, RichMessage,
+    StreamRequest, Usage, UserContentBlock, UserMessageContent,
 };
+use thiserror::Error;
 
 use crate::harness::messages::{
     BranchSummaryMessage, CompactionSummaryMessage, CustomMessage, BRANCH_SUMMARY_PREFIX,
@@ -24,6 +26,8 @@ pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
 };
 
 pub const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n";
+pub const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.\n\nUse this EXACT format:\n\n## Goal\n[What was the user trying to accomplish in this branch?]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Work that was started but not finished]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [What should happen next to continue this work]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
 #[derive(Debug, Clone)]
 pub struct BranchSummaryEntries {
@@ -50,6 +54,36 @@ pub struct BranchSummaryResult {
     pub summary: String,
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GenerateBranchSummaryOptions {
+    pub custom_instructions: Option<String>,
+    pub replace_instructions: bool,
+    pub reserve_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchSummaryErrorCode {
+    Aborted,
+    SummarizationFailed,
+    InvalidSession,
+}
+
+#[derive(Debug, Error)]
+#[error("{code:?}: {message}")]
+pub struct BranchSummaryError {
+    pub code: BranchSummaryErrorCode,
+    pub message: String,
+}
+
+impl BranchSummaryError {
+    pub fn new(code: BranchSummaryErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,6 +391,164 @@ pub fn finalize_branch_summary(
     }
 }
 
+pub fn generate_branch_summary<P: LanguageModelProvider>(
+    entries: &[SessionTreeEntry],
+    provider: &P,
+    model: Model,
+    options: GenerateBranchSummaryOptions,
+) -> Result<BranchSummaryResult, BranchSummaryError> {
+    let context_window = model.context_window as u64;
+    let reserve_tokens = options.reserve_tokens.unwrap_or(16_384);
+    let token_budget = context_window.saturating_sub(reserve_tokens);
+    let preparation = prepare_branch_entries(entries, token_budget);
+    if preparation.messages.is_empty() {
+        return Ok(BranchSummaryResult {
+            summary: "No content to summarize".to_string(),
+            read_files: Vec::new(),
+            modified_files: Vec::new(),
+        });
+    }
+
+    let rich_messages = agent_messages_to_summary_rich_messages(&preparation.messages);
+    let conversation_text = serialize_conversation(&rich_messages);
+    let instructions = branch_summary_instructions(&options);
+    let prompt_text =
+        format!("<conversation>\n{conversation_text}\n</conversation>\n\n{instructions}");
+    let request = StreamRequest {
+        model,
+        messages: vec![Message {
+            role: MessageRole::User,
+            content: prompt_text,
+        }],
+        rich_messages: Vec::new(),
+        tools: Vec::new(),
+        metadata: Default::default(),
+    };
+    let response = provider.stream(request).map_err(|error| {
+        BranchSummaryError::new(
+            BranchSummaryErrorCode::SummarizationFailed,
+            format!("Branch summary failed: {error}"),
+        )
+    })?;
+    let message = ai::stream::provider_events_to_stream(response)
+        .map_err(|error| {
+            BranchSummaryError::new(
+                BranchSummaryErrorCode::SummarizationFailed,
+                format!("Branch summary failed: {error}"),
+            )
+        })?
+        .into_result()
+        .ok_or_else(|| {
+            BranchSummaryError::new(
+                BranchSummaryErrorCode::SummarizationFailed,
+                "Branch summary failed: stream ended without final result",
+            )
+        })?;
+    match message.stop_reason {
+        AssistantStopReason::Aborted => {
+            return Err(BranchSummaryError::new(
+                BranchSummaryErrorCode::Aborted,
+                message
+                    .error_message
+                    .unwrap_or_else(|| "Branch summary aborted".to_string()),
+            ));
+        }
+        AssistantStopReason::Error => {
+            return Err(BranchSummaryError::new(
+                BranchSummaryErrorCode::SummarizationFailed,
+                format!(
+                    "Branch summary failed: {}",
+                    message
+                        .error_message
+                        .unwrap_or_else(|| "Unknown error".to_string())
+                ),
+            ));
+        }
+        _ => {}
+    }
+
+    let summary_text = if !message.content.is_empty() {
+        message.content
+    } else {
+        message
+            .content_blocks
+            .iter()
+            .filter_map(|block| match block {
+                ai::AssistantContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(finalize_branch_summary(summary_text, &preparation.file_ops))
+}
+
+fn branch_summary_instructions(options: &GenerateBranchSummaryOptions) -> String {
+    match (
+        options.replace_instructions,
+        options.custom_instructions.as_deref(),
+    ) {
+        (true, Some(custom)) => custom.to_string(),
+        (false, Some(custom)) => format!("{BRANCH_SUMMARY_PROMPT}\n\nAdditional focus: {custom}"),
+        _ => BRANCH_SUMMARY_PROMPT.to_string(),
+    }
+}
+
+fn agent_messages_to_summary_rich_messages(messages: &[AgentMessage]) -> Vec<RichMessage> {
+    messages
+        .iter()
+        .filter_map(|message| match message.role {
+            MessageRole::User => Some(RichMessage::User(ai::UserMessage {
+                content: if message.user_content_blocks.is_empty() {
+                    ai::UserMessageContent::Text(message.content.clone())
+                } else {
+                    ai::UserMessageContent::Blocks(message.user_content_blocks.clone())
+                },
+                timestamp_millis: 0,
+            })),
+            MessageRole::Assistant => Some(RichMessage::Assistant(ai::RichAssistantMessage {
+                content: if message.content_blocks.is_empty() {
+                    vec![ai::AssistantContentBlock::Text(ai::TextContent {
+                        text: message.content.clone(),
+                        text_signature: None,
+                    })]
+                } else {
+                    message.content_blocks.clone()
+                },
+                api: String::new(),
+                provider: String::new(),
+                model: String::new(),
+                response_model: None,
+                response_id: None,
+                usage: message.usage.clone().unwrap_or_default(),
+                stop_reason: message
+                    .stop_reason
+                    .clone()
+                    .unwrap_or(AssistantStopReason::Stop),
+                error_message: None,
+                diagnostics: Vec::new(),
+                timestamp_millis: 0,
+            })),
+            MessageRole::Tool => Some(RichMessage::ToolResult(ai::ToolResultMessage {
+                tool_call_id: message.tool_call_id.clone().unwrap_or_default(),
+                tool_name: message.tool_name.clone().unwrap_or_default(),
+                content: if message.user_content_blocks.is_empty() {
+                    vec![ai::UserContentBlock::Text(ai::TextContent {
+                        text: message.content.clone(),
+                        text_signature: None,
+                    })]
+                } else {
+                    message.user_content_blocks.clone()
+                },
+                details: message.details.clone(),
+                is_error: message.is_error,
+                timestamp_millis: 0,
+            })),
+            MessageRole::System => None,
+        })
+        .collect()
+}
+
 fn user_content_text(content: &UserMessageContent) -> String {
     match content {
         UserMessageContent::Text(text) => text.clone(),
@@ -500,12 +692,13 @@ mod tests {
     use super::*;
     use crate::harness::session::{InMemorySessionStorage, Session};
     use ai::{
-        AssistantContentBlock, RichAssistantMessage, RichMessage, TextContent, ThinkingContent,
-        ToolCall, ToolResultMessage, Usage, UsageCost, UserContentBlock, UserMessage,
-        UserMessageContent,
+        AiResult, AssistantContentBlock, LanguageModelProvider, Model, RichAssistantMessage,
+        RichMessage, StreamEvent, StreamRequest, TextContent, ThinkingContent, ToolCall,
+        ToolResultMessage, Usage, UsageCost, UserContentBlock, UserMessage, UserMessageContent,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
     fn message(role: MessageRole, content: &str) -> AgentMessage {
         AgentMessage {
@@ -546,6 +739,39 @@ mod tests {
             thought_signature: None,
         })];
         message
+    }
+
+    #[derive(Debug, Clone)]
+    struct BranchSummaryProvider {
+        requests: Arc<Mutex<Vec<StreamRequest>>>,
+        events: Vec<StreamEvent>,
+    }
+
+    impl BranchSummaryProvider {
+        fn new(events: Vec<StreamEvent>) -> Self {
+            Self {
+                requests: Arc::new(Mutex::new(Vec::new())),
+                events,
+            }
+        }
+    }
+
+    impl LanguageModelProvider for BranchSummaryProvider {
+        fn stream(&self, request: StreamRequest) -> AiResult<Vec<StreamEvent>> {
+            self.requests.lock().expect("requests lock").push(request);
+            Ok(self.events.clone())
+        }
+    }
+
+    fn summary_model(context_window: usize) -> Model {
+        Model {
+            id: "summary-model".to_string(),
+            provider: "test".to_string(),
+            api: "test".to_string(),
+            display_name: "Summary Model".to_string(),
+            context_window,
+            ..Model::default()
+        }
     }
 
     fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64, total: u64) -> Usage {
@@ -821,5 +1047,68 @@ mod tests {
         assert!(result
             .summary
             .contains("<modified-files>\nsrc/main.rs\n</modified-files>"));
+    }
+
+    #[test]
+    fn generate_branch_summary_calls_provider_and_finalizes_like_pi() {
+        let provider = BranchSummaryProvider::new(vec![StreamEvent::Finished {
+            message: ai::Message {
+                role: MessageRole::Assistant,
+                content: "Generated summary".to_string(),
+            },
+        }]);
+        let entries = vec![SessionTreeEntry::Message {
+            id: "user".to_string(),
+            parent_id: None,
+            timestamp: "2026-01-01T00:00:00.000Z".to_string(),
+            message: message(MessageRole::User, "summarize this branch"),
+        }];
+
+        let result = generate_branch_summary(
+            &entries,
+            &provider,
+            summary_model(32_000),
+            GenerateBranchSummaryOptions {
+                custom_instructions: Some("focus on files".to_string()),
+                replace_instructions: false,
+                reserve_tokens: Some(16_384),
+            },
+        )
+        .expect("summary should generate");
+
+        assert!(result.summary.contains("Generated summary"));
+        let requests = provider.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages.len(), 1);
+        assert!(requests[0].messages[0]
+            .content
+            .contains("<conversation>\n[User]: summarize this branch\n</conversation>"));
+        assert!(requests[0].messages[0]
+            .content
+            .contains("Additional focus: focus on files"));
+    }
+
+    #[test]
+    fn generate_branch_summary_maps_provider_error_like_pi() {
+        let provider = BranchSummaryProvider::new(vec![StreamEvent::Error {
+            message: "provider failed".to_string(),
+        }]);
+        let entries = vec![SessionTreeEntry::Message {
+            id: "user".to_string(),
+            parent_id: None,
+            timestamp: "2026-01-01T00:00:00.000Z".to_string(),
+            message: message(MessageRole::User, "summarize this branch"),
+        }];
+
+        let error = generate_branch_summary(
+            &entries,
+            &provider,
+            summary_model(32_000),
+            GenerateBranchSummaryOptions::default(),
+        )
+        .expect_err("provider error should map");
+
+        assert_eq!(error.code, BranchSummaryErrorCode::SummarizationFailed);
+        assert!(error.message.contains("provider failed"));
     }
 }
