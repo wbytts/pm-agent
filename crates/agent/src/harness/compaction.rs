@@ -63,6 +63,13 @@ pub struct GenerateBranchSummaryOptions {
     pub reserve_tokens: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CutPointResult {
+    pub first_kept_entry_index: usize,
+    pub turn_start_index: Option<usize>,
+    pub is_split_turn: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchSummaryErrorCode {
     Aborted,
@@ -481,6 +488,105 @@ pub fn generate_branch_summary<P: LanguageModelProvider>(
             .join("\n")
     };
     Ok(finalize_branch_summary(summary_text, &preparation.file_ops))
+}
+
+pub fn find_cut_point(
+    entries: &[SessionTreeEntry],
+    start_index: usize,
+    end_index: usize,
+    keep_recent_tokens: u64,
+) -> CutPointResult {
+    let cut_points = find_valid_cut_points(entries, start_index, end_index);
+    if cut_points.is_empty() {
+        return CutPointResult {
+            first_kept_entry_index: start_index,
+            turn_start_index: None,
+            is_split_turn: false,
+        };
+    }
+
+    let mut accumulated_tokens = 0;
+    let mut cut_index = cut_points[0];
+    for index in (start_index..end_index).rev() {
+        let entry = &entries[index];
+        let SessionTreeEntry::Message { message, .. } = entry else {
+            continue;
+        };
+        accumulated_tokens += estimate_tokens(message);
+        if accumulated_tokens >= keep_recent_tokens {
+            if let Some(next_cut) = cut_points.iter().find(|cut| **cut >= index) {
+                cut_index = *next_cut;
+            }
+            break;
+        }
+    }
+
+    while cut_index > start_index {
+        let prev_entry = &entries[cut_index - 1];
+        if matches!(
+            prev_entry,
+            SessionTreeEntry::Compaction { .. } | SessionTreeEntry::Message { .. }
+        ) {
+            break;
+        }
+        cut_index -= 1;
+    }
+
+    let is_user_message = matches!(
+        entries.get(cut_index),
+        Some(SessionTreeEntry::Message { message, .. }) if message.role == MessageRole::User
+    );
+    let turn_start_index = if is_user_message {
+        None
+    } else {
+        find_turn_start_index(entries, cut_index, start_index)
+    };
+    CutPointResult {
+        first_kept_entry_index: cut_index,
+        turn_start_index,
+        is_split_turn: !is_user_message && turn_start_index.is_some(),
+    }
+}
+
+fn find_valid_cut_points(
+    entries: &[SessionTreeEntry],
+    start_index: usize,
+    end_index: usize,
+) -> Vec<usize> {
+    let mut cut_points = Vec::new();
+    for index in start_index..end_index {
+        let entry = &entries[index];
+        match entry {
+            SessionTreeEntry::Message { message, .. } => match message.role {
+                MessageRole::User | MessageRole::Assistant => cut_points.push(index),
+                MessageRole::System | MessageRole::Tool => {}
+            },
+            SessionTreeEntry::BranchSummary { .. } | SessionTreeEntry::CustomMessage { .. } => {
+                cut_points.push(index);
+            }
+            _ => {}
+        }
+    }
+    cut_points
+}
+
+pub fn find_turn_start_index(
+    entries: &[SessionTreeEntry],
+    entry_index: usize,
+    start_index: usize,
+) -> Option<usize> {
+    for index in (start_index..=entry_index).rev() {
+        match &entries[index] {
+            SessionTreeEntry::BranchSummary { .. } | SessionTreeEntry::CustomMessage { .. } => {
+                return Some(index);
+            }
+            SessionTreeEntry::Message { message, .. } if message.role == MessageRole::User => {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn branch_summary_instructions(options: &GenerateBranchSummaryOptions) -> String {
@@ -1110,5 +1216,41 @@ mod tests {
 
         assert_eq!(error.code, BranchSummaryErrorCode::SummarizationFailed);
         assert!(error.message.contains("provider failed"));
+    }
+
+    #[test]
+    fn find_cut_point_marks_split_turn_like_pi() {
+        let entries = vec![
+            SessionTreeEntry::Message {
+                id: "old-user".to_string(),
+                parent_id: None,
+                timestamp: "2026-01-01T00:00:00.000Z".to_string(),
+                message: message(MessageRole::User, "old request"),
+            },
+            SessionTreeEntry::Message {
+                id: "old-assistant".to_string(),
+                parent_id: Some("old-user".to_string()),
+                timestamp: "2026-01-01T00:00:01.000Z".to_string(),
+                message: message(MessageRole::Assistant, "old answer"),
+            },
+            SessionTreeEntry::Message {
+                id: "new-user".to_string(),
+                parent_id: Some("old-assistant".to_string()),
+                timestamp: "2026-01-01T00:00:02.000Z".to_string(),
+                message: message(MessageRole::User, "new request"),
+            },
+            SessionTreeEntry::Message {
+                id: "new-assistant".to_string(),
+                parent_id: Some("new-user".to_string()),
+                timestamp: "2026-01-01T00:00:03.000Z".to_string(),
+                message: message(MessageRole::Assistant, "long assistant suffix"),
+            },
+        ];
+
+        let cut = find_cut_point(&entries, 0, entries.len(), 2);
+
+        assert_eq!(cut.first_kept_entry_index, 3);
+        assert_eq!(cut.turn_start_index, Some(2));
+        assert!(cut.is_split_turn);
     }
 }
