@@ -12,10 +12,11 @@ pub use compaction::{
     calculate_context_tokens, collect_entries_for_branch_summary, compute_file_lists,
     estimate_context_tokens, estimate_tokens, finalize_branch_summary, find_cut_point,
     find_turn_start_index, format_file_operations, generate_branch_summary, prepare_branch_entries,
-    serialize_conversation, should_compact, BranchPreparation, BranchSummaryEntries,
-    BranchSummaryError, BranchSummaryErrorCode, BranchSummaryResult, CompactionSettings,
-    ContextUsageEstimate, CutPointResult, FileOperations, BRANCH_SUMMARY_PREAMBLE,
-    BRANCH_SUMMARY_PROMPT, DEFAULT_COMPACTION_SETTINGS, SUMMARIZATION_SYSTEM_PROMPT,
+    prepare_compaction, serialize_conversation, should_compact, BranchPreparation,
+    BranchSummaryEntries, BranchSummaryError, BranchSummaryErrorCode, BranchSummaryResult,
+    CompactionPreparation, CompactionSettings, ContextUsageEstimate, CutPointResult,
+    FileOperations, BRANCH_SUMMARY_PREAMBLE, BRANCH_SUMMARY_PROMPT, DEFAULT_COMPACTION_SETTINGS,
+    SUMMARIZATION_SYSTEM_PROMPT,
 };
 #[cfg(unix)]
 pub use env::file_info_from_unix_mode;

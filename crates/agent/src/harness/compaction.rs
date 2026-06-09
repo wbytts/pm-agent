@@ -49,6 +49,18 @@ pub struct BranchPreparation {
     pub total_tokens: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompactionPreparation {
+    pub first_kept_entry_id: String,
+    pub messages_to_summarize: Vec<AgentMessage>,
+    pub turn_prefix_messages: Vec<AgentMessage>,
+    pub is_split_turn: bool,
+    pub tokens_before: u64,
+    pub previous_summary: Option<String>,
+    pub file_ops: FileOperations,
+    pub settings: CompactionSettings,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchSummaryResult {
     pub summary: String,
@@ -274,6 +286,122 @@ pub fn prepare_branch_entries(
         file_ops,
         total_tokens,
     }
+}
+
+pub fn prepare_compaction(
+    path_entries: &[SessionTreeEntry],
+    settings: CompactionSettings,
+) -> Result<Option<CompactionPreparation>, BranchSummaryError> {
+    if path_entries.is_empty()
+        || matches!(
+            path_entries.last(),
+            Some(SessionTreeEntry::Compaction { .. })
+        )
+    {
+        return Ok(None);
+    }
+
+    let prev_compaction_index = path_entries
+        .iter()
+        .rposition(|entry| matches!(entry, SessionTreeEntry::Compaction { .. }));
+
+    let mut previous_summary = None;
+    let mut boundary_start = 0;
+    if let Some(index) = prev_compaction_index {
+        if let SessionTreeEntry::Compaction {
+            summary,
+            first_kept_entry_id,
+            ..
+        } = &path_entries[index]
+        {
+            previous_summary = Some(summary.clone());
+            boundary_start = path_entries
+                .iter()
+                .position(|entry| entry.id() == first_kept_entry_id)
+                .unwrap_or(index + 1);
+        }
+    }
+    let boundary_end = path_entries.len();
+    let branch_context =
+        crate::harness::session::build_session_context(path_entries).map_err(|error| {
+            BranchSummaryError::new(BranchSummaryErrorCode::InvalidSession, error.message)
+        })?;
+    let tokens_before = estimate_context_tokens(&branch_context.messages).tokens;
+    let cut_point = find_cut_point(
+        path_entries,
+        boundary_start,
+        boundary_end,
+        settings.keep_recent_tokens,
+    );
+    let first_kept_entry = path_entries
+        .get(cut_point.first_kept_entry_index)
+        .ok_or_else(|| {
+            BranchSummaryError::new(
+                BranchSummaryErrorCode::InvalidSession,
+                "First kept entry has no UUID - session may need migration",
+            )
+        })?;
+    let first_kept_entry_id = first_kept_entry.id().to_string();
+    if first_kept_entry_id.is_empty() {
+        return Err(BranchSummaryError::new(
+            BranchSummaryErrorCode::InvalidSession,
+            "First kept entry has no UUID - session may need migration",
+        ));
+    }
+
+    let history_end = if cut_point.is_split_turn {
+        cut_point
+            .turn_start_index
+            .unwrap_or(cut_point.first_kept_entry_index)
+    } else {
+        cut_point.first_kept_entry_index
+    };
+    let mut messages_to_summarize = Vec::new();
+    for entry in &path_entries[boundary_start..history_end] {
+        if let Some(message) = message_from_compaction_entry(entry) {
+            messages_to_summarize.push(message);
+        }
+    }
+    let mut turn_prefix_messages = Vec::new();
+    if cut_point.is_split_turn {
+        let turn_start = cut_point
+            .turn_start_index
+            .unwrap_or(cut_point.first_kept_entry_index);
+        for entry in &path_entries[turn_start..cut_point.first_kept_entry_index] {
+            if let Some(message) = message_from_compaction_entry(entry) {
+                turn_prefix_messages.push(message);
+            }
+        }
+    }
+
+    let mut file_ops = FileOperations::default();
+    if let Some(index) = prev_compaction_index {
+        if let SessionTreeEntry::Compaction {
+            details,
+            from_hook: false,
+            ..
+        } = &path_entries[index]
+        {
+            collect_file_ops_from_details(details.as_ref(), &mut file_ops);
+        }
+    }
+    for message in messages_to_summarize
+        .iter()
+        .chain(turn_prefix_messages.iter())
+    {
+        extract_file_ops_from_message(message, &mut file_ops);
+    }
+
+    Ok(Some(CompactionPreparation {
+        first_kept_entry_id,
+        messages_to_summarize,
+        turn_prefix_messages,
+        is_split_turn: cut_point.is_split_turn,
+        tokens_before,
+        previous_summary,
+        file_ops,
+        settings,
+    }))
 }
 
 pub fn compute_file_lists(file_ops: &FileOperations) -> (Vec<String>, Vec<String>) {
@@ -736,6 +864,13 @@ fn message_from_branch_entry(entry: &SessionTreeEntry) -> Option<AgentMessage> {
             timestamp: 0,
         })),
         _ => None,
+    }
+}
+
+fn message_from_compaction_entry(entry: &SessionTreeEntry) -> Option<AgentMessage> {
+    match entry {
+        SessionTreeEntry::Compaction { .. } => None,
+        _ => message_from_branch_entry(entry),
     }
 }
 
@@ -1252,5 +1387,71 @@ mod tests {
         assert_eq!(cut.first_kept_entry_index, 3);
         assert_eq!(cut.turn_start_index, Some(2));
         assert!(cut.is_split_turn);
+    }
+
+    #[test]
+    fn prepare_compaction_uses_previous_summary_and_split_turn_like_pi() {
+        let entries = vec![
+            SessionTreeEntry::Compaction {
+                id: "compact-1".to_string(),
+                parent_id: None,
+                timestamp: "2026-01-01T00:00:00.000Z".to_string(),
+                summary: "previous summary".to_string(),
+                first_kept_entry_id: "old-user".to_string(),
+                tokens_before: 100,
+                details: Some(json!({
+                    "readFiles": ["previous-read.md"],
+                    "modifiedFiles": ["previous-edit.md"]
+                })),
+                from_hook: false,
+            },
+            SessionTreeEntry::Message {
+                id: "old-user".to_string(),
+                parent_id: Some("compact-1".to_string()),
+                timestamp: "2026-01-01T00:00:01.000Z".to_string(),
+                message: message(MessageRole::User, "old request"),
+            },
+            SessionTreeEntry::Message {
+                id: "old-assistant".to_string(),
+                parent_id: Some("old-user".to_string()),
+                timestamp: "2026-01-01T00:00:02.000Z".to_string(),
+                message: assistant_with_tool_call("read", "new-read.md"),
+            },
+            SessionTreeEntry::Message {
+                id: "new-user".to_string(),
+                parent_id: Some("old-assistant".to_string()),
+                timestamp: "2026-01-01T00:00:03.000Z".to_string(),
+                message: message(MessageRole::User, "new request"),
+            },
+            SessionTreeEntry::Message {
+                id: "new-assistant".to_string(),
+                parent_id: Some("new-user".to_string()),
+                timestamp: "2026-01-01T00:00:04.000Z".to_string(),
+                message: message(MessageRole::Assistant, "long assistant suffix"),
+            },
+        ];
+
+        let preparation = prepare_compaction(
+            &entries,
+            CompactionSettings {
+                enabled: true,
+                reserve_tokens: 10,
+                keep_recent_tokens: 2,
+            },
+        )
+        .expect("preparation should succeed")
+        .expect("compaction should be applicable");
+
+        assert_eq!(preparation.first_kept_entry_id, "new-assistant");
+        assert_eq!(
+            preparation.previous_summary.as_deref(),
+            Some("previous summary")
+        );
+        assert!(preparation.is_split_turn);
+        assert_eq!(preparation.messages_to_summarize.len(), 2);
+        assert_eq!(preparation.turn_prefix_messages.len(), 1);
+        assert!(preparation.file_ops.read.contains("previous-read.md"));
+        assert!(preparation.file_ops.read.contains("new-read.md"));
+        assert!(preparation.file_ops.edited.contains("previous-edit.md"));
     }
 }
