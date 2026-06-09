@@ -23,6 +23,8 @@ pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
     keep_recent_tokens: 20_000,
 };
 
+pub const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n";
+
 #[derive(Debug, Clone)]
 pub struct BranchSummaryEntries {
     pub entries: Vec<SessionTreeEntry>,
@@ -41,6 +43,13 @@ pub struct BranchPreparation {
     pub messages: Vec<AgentMessage>,
     pub file_ops: FileOperations,
     pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchSummaryResult {
+    pub summary: String,
+    pub read_files: Vec<String>,
+    pub modified_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,6 +338,23 @@ pub fn serialize_conversation(messages: &[RichMessage]) -> String {
         }
     }
     parts.join("\n\n")
+}
+
+pub fn finalize_branch_summary(
+    summary_text: impl AsRef<str>,
+    file_ops: &FileOperations,
+) -> BranchSummaryResult {
+    let (read_files, modified_files) = compute_file_lists(file_ops);
+    let mut summary = format!("{}{}", BRANCH_SUMMARY_PREAMBLE, summary_text.as_ref());
+    summary.push_str(&format_file_operations(&read_files, &modified_files));
+    if summary.is_empty() {
+        summary = "No summary generated".to_string();
+    }
+    BranchSummaryResult {
+        summary,
+        read_files,
+        modified_files,
+    }
 }
 
 fn user_content_text(content: &UserMessageContent) -> String {
@@ -764,5 +790,36 @@ mod tests {
         assert!(serialized.contains("[Assistant tool calls]: read(path=\"README.md\")"));
         assert!(serialized.contains("[Tool result]: "));
         assert!(serialized.contains("[... 4 more characters truncated]"));
+    }
+
+    #[test]
+    fn finalizes_branch_summary_with_preamble_and_file_tags_like_pi() {
+        let file_ops = FileOperations {
+            read: BTreeMap::from([
+                ("README.md".to_string(), ()),
+                ("src/main.rs".to_string(), ()),
+            ])
+            .into_keys()
+            .collect(),
+            written: Default::default(),
+            edited: BTreeMap::from([("src/main.rs".to_string(), ())])
+                .into_keys()
+                .collect(),
+        };
+
+        let result = finalize_branch_summary("Model summary", &file_ops);
+
+        assert_eq!(result.read_files, vec!["README.md"]);
+        assert_eq!(result.modified_files, vec!["src/main.rs"]);
+        assert!(result.summary.starts_with(
+            "The user explored a different conversation branch before returning here."
+        ));
+        assert!(result.summary.contains("Model summary"));
+        assert!(result
+            .summary
+            .contains("<read-files>\nREADME.md\n</read-files>"));
+        assert!(result
+            .summary
+            .contains("<modified-files>\nsrc/main.rs\n</modified-files>"));
     }
 }

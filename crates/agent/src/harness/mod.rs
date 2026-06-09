@@ -10,9 +10,10 @@ pub mod types;
 
 pub use compaction::{
     calculate_context_tokens, collect_entries_for_branch_summary, compute_file_lists,
-    estimate_context_tokens, estimate_tokens, format_file_operations, prepare_branch_entries,
-    serialize_conversation, should_compact, BranchPreparation, BranchSummaryEntries,
-    CompactionSettings, ContextUsageEstimate, FileOperations, DEFAULT_COMPACTION_SETTINGS,
+    estimate_context_tokens, estimate_tokens, finalize_branch_summary, format_file_operations,
+    prepare_branch_entries, serialize_conversation, should_compact, BranchPreparation,
+    BranchSummaryEntries, BranchSummaryResult, CompactionSettings, ContextUsageEstimate,
+    FileOperations, BRANCH_SUMMARY_PREAMBLE, DEFAULT_COMPACTION_SETTINGS,
 };
 #[cfg(unix)]
 pub use env::file_info_from_unix_mode;
