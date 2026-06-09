@@ -9,14 +9,17 @@ pub mod truncate;
 pub mod types;
 
 pub use compaction::{
-    calculate_context_tokens, collect_entries_for_branch_summary, compute_file_lists,
+    calculate_context_tokens, collect_entries_for_branch_summary, compact, compute_file_lists,
     estimate_context_tokens, estimate_tokens, finalize_branch_summary, find_cut_point,
-    find_turn_start_index, format_file_operations, generate_branch_summary, prepare_branch_entries,
-    prepare_compaction, serialize_conversation, should_compact, BranchPreparation,
-    BranchSummaryEntries, BranchSummaryError, BranchSummaryErrorCode, BranchSummaryResult,
-    CompactionPreparation, CompactionSettings, ContextUsageEstimate, CutPointResult,
-    FileOperations, BRANCH_SUMMARY_PREAMBLE, BRANCH_SUMMARY_PROMPT, DEFAULT_COMPACTION_SETTINGS,
-    SUMMARIZATION_SYSTEM_PROMPT,
+    find_turn_start_index, format_file_operations, generate_branch_summary, generate_summary,
+    generate_turn_prefix_summary, prepare_branch_entries, prepare_compaction,
+    serialize_conversation, should_compact, BranchPreparation, BranchSummaryEntries,
+    BranchSummaryError, BranchSummaryErrorCode, BranchSummaryResult, CompactOptions,
+    CompactionDetails, CompactionError, CompactionErrorCode, CompactionPreparation,
+    CompactionResult, CompactionSettings, ContextUsageEstimate, CutPointResult, FileOperations,
+    BRANCH_SUMMARY_PREAMBLE, BRANCH_SUMMARY_PROMPT, DEFAULT_COMPACTION_SETTINGS,
+    SUMMARIZATION_PROMPT, SUMMARIZATION_SYSTEM_PROMPT, TURN_PREFIX_SUMMARIZATION_PROMPT,
+    UPDATE_SUMMARIZATION_PROMPT,
 };
 #[cfg(unix)]
 pub use env::file_info_from_unix_mode;

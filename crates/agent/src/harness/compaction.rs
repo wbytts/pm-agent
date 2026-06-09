@@ -28,6 +28,9 @@ pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
 pub const BRANCH_SUMMARY_PREAMBLE: &str = "The user explored a different conversation branch before returning here.\nSummary of that exploration:\n\n";
 pub const BRANCH_SUMMARY_PROMPT: &str = "Create a structured summary of this conversation branch for context when returning later.\n\nUse this EXACT format:\n\n## Goal\n[What was the user trying to accomplish in this branch?]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Work that was started but not finished]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [What should happen next to continue this work]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
+pub const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or \"(none)\" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or \"(none)\" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+pub const UPDATE_SUMMARIZATION_PROMPT: &str = "The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from \"In Progress\" to \"Done\" when completed\n- UPDATE \"Next Steps\" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.";
+pub const TURN_PREFIX_SUMMARIZATION_PROMPT: &str = "This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what's needed to understand the kept suffix.";
 
 #[derive(Debug, Clone)]
 pub struct BranchSummaryEntries {
@@ -68,11 +71,47 @@ pub struct BranchSummaryResult {
     pub modified_files: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionDetails {
+    pub read_files: Vec<String>,
+    pub modified_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionResult {
+    pub summary: String,
+    pub first_kept_entry_id: String,
+    pub tokens_before: u64,
+    pub details: CompactionDetails,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenerateBranchSummaryOptions {
     pub custom_instructions: Option<String>,
     pub replace_instructions: bool,
     pub reserve_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenerateSummaryOptions {
+    pub custom_instructions: Option<String>,
+    pub previous_summary: Option<String>,
+    pub reserve_tokens: u64,
+}
+
+impl Default for GenerateSummaryOptions {
+    fn default() -> Self {
+        Self {
+            custom_instructions: None,
+            previous_summary: None,
+            reserve_tokens: DEFAULT_COMPACTION_SETTINGS.reserve_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompactOptions {
+    pub custom_instructions: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +128,13 @@ pub enum BranchSummaryErrorCode {
     InvalidSession,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionErrorCode {
+    Aborted,
+    SummarizationFailed,
+    InvalidSession,
+}
+
 #[derive(Debug, Error)]
 #[error("{code:?}: {message}")]
 pub struct BranchSummaryError {
@@ -98,6 +144,22 @@ pub struct BranchSummaryError {
 
 impl BranchSummaryError {
     pub fn new(code: BranchSummaryErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("{code:?}: {message}")]
+pub struct CompactionError {
+    pub code: CompactionErrorCode,
+    pub message: String,
+}
+
+impl CompactionError {
+    pub fn new(code: CompactionErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -618,6 +680,142 @@ pub fn generate_branch_summary<P: LanguageModelProvider>(
     Ok(finalize_branch_summary(summary_text, &preparation.file_ops))
 }
 
+pub fn generate_summary<P: LanguageModelProvider>(
+    current_messages: &[AgentMessage],
+    provider: &P,
+    model: Model,
+    options: GenerateSummaryOptions,
+) -> Result<String, CompactionError> {
+    let rich_messages = agent_messages_to_summary_rich_messages(current_messages);
+    let conversation_text = serialize_conversation(&rich_messages);
+    let mut prompt_text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n");
+    if let Some(previous_summary) = options.previous_summary.as_deref() {
+        prompt_text.push_str(&format!(
+            "<previous-summary>\n{previous_summary}\n</previous-summary>\n\n"
+        ));
+    }
+    prompt_text.push_str(&summary_instructions(&options));
+
+    let max_tokens = summary_max_tokens(&model, options.reserve_tokens, 0.8);
+    let response = stream_summary(
+        provider,
+        StreamRequest {
+            model: model_with_max_tokens(model, max_tokens),
+            messages: vec![
+                Message {
+                    role: MessageRole::System,
+                    content: SUMMARIZATION_SYSTEM_PROMPT.to_string(),
+                },
+                Message {
+                    role: MessageRole::User,
+                    content: prompt_text,
+                },
+            ],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: Default::default(),
+        },
+    )?;
+    map_summary_message(response, "Summarization")
+}
+
+pub fn generate_turn_prefix_summary<P: LanguageModelProvider>(
+    messages: &[AgentMessage],
+    provider: &P,
+    model: Model,
+    reserve_tokens: u64,
+) -> Result<String, CompactionError> {
+    let rich_messages = agent_messages_to_summary_rich_messages(messages);
+    let conversation_text = serialize_conversation(&rich_messages);
+    let prompt_text =
+        format!("<conversation>\n{conversation_text}\n</conversation>\n\n{TURN_PREFIX_SUMMARIZATION_PROMPT}");
+    let max_tokens = summary_max_tokens(&model, reserve_tokens, 0.5);
+    let response = stream_summary(
+        provider,
+        StreamRequest {
+            model: model_with_max_tokens(model, max_tokens),
+            messages: vec![
+                Message {
+                    role: MessageRole::System,
+                    content: SUMMARIZATION_SYSTEM_PROMPT.to_string(),
+                },
+                Message {
+                    role: MessageRole::User,
+                    content: prompt_text,
+                },
+            ],
+            rich_messages: Vec::new(),
+            tools: Vec::new(),
+            metadata: Default::default(),
+        },
+    )?;
+    map_summary_message(response, "Turn prefix summarization")
+}
+
+pub fn compact<P: LanguageModelProvider>(
+    preparation: CompactionPreparation,
+    provider: &P,
+    model: Model,
+    options: CompactOptions,
+) -> Result<CompactionResult, CompactionError> {
+    if preparation.first_kept_entry_id.is_empty() {
+        return Err(CompactionError::new(
+            CompactionErrorCode::InvalidSession,
+            "First kept entry has no UUID - session may need migration",
+        ));
+    }
+
+    let mut summary = if preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty() {
+        let history_summary = if preparation.messages_to_summarize.is_empty() {
+            "No prior history.".to_string()
+        } else {
+            generate_summary(
+                &preparation.messages_to_summarize,
+                provider,
+                model.clone(),
+                GenerateSummaryOptions {
+                    custom_instructions: options.custom_instructions.clone(),
+                    previous_summary: preparation.previous_summary.clone(),
+                    reserve_tokens: preparation.settings.reserve_tokens,
+                },
+            )?
+        };
+        let turn_prefix_summary = generate_turn_prefix_summary(
+            &preparation.turn_prefix_messages,
+            provider,
+            model,
+            preparation.settings.reserve_tokens,
+        )?;
+        format!(
+            "{history_summary}\n\n---\n\n**Turn Context (split turn):**\n\n{turn_prefix_summary}"
+        )
+    } else {
+        generate_summary(
+            &preparation.messages_to_summarize,
+            provider,
+            model,
+            GenerateSummaryOptions {
+                custom_instructions: options.custom_instructions,
+                previous_summary: preparation.previous_summary,
+                reserve_tokens: preparation.settings.reserve_tokens,
+            },
+        )?
+    };
+
+    let (read_files, modified_files) = compute_file_lists(&preparation.file_ops);
+    summary.push_str(&format_file_operations(&read_files, &modified_files));
+
+    Ok(CompactionResult {
+        summary,
+        first_kept_entry_id: preparation.first_kept_entry_id,
+        tokens_before: preparation.tokens_before,
+        details: CompactionDetails {
+            read_files,
+            modified_files,
+        },
+    })
+}
+
 pub fn find_cut_point(
     entries: &[SessionTreeEntry],
     start_index: usize,
@@ -726,6 +924,100 @@ fn branch_summary_instructions(options: &GenerateBranchSummaryOptions) -> String
         (false, Some(custom)) => format!("{BRANCH_SUMMARY_PROMPT}\n\nAdditional focus: {custom}"),
         _ => BRANCH_SUMMARY_PROMPT.to_string(),
     }
+}
+
+fn summary_instructions(options: &GenerateSummaryOptions) -> String {
+    let base_prompt = if options.previous_summary.is_some() {
+        UPDATE_SUMMARIZATION_PROMPT
+    } else {
+        SUMMARIZATION_PROMPT
+    };
+    match options.custom_instructions.as_deref() {
+        Some(custom_instructions) => {
+            format!("{base_prompt}\n\nAdditional focus: {custom_instructions}")
+        }
+        None => base_prompt.to_string(),
+    }
+}
+
+fn summary_max_tokens(model: &Model, reserve_tokens: u64, ratio: f64) -> usize {
+    let reserve_limit = ((reserve_tokens as f64) * ratio).floor() as usize;
+    match model.max_tokens {
+        Some(model_limit) => reserve_limit.min(model_limit),
+        None => reserve_limit,
+    }
+}
+
+fn model_with_max_tokens(mut model: Model, max_tokens: usize) -> Model {
+    model.max_tokens = Some(max_tokens);
+    model
+}
+
+fn stream_summary<P: LanguageModelProvider>(
+    provider: &P,
+    request: StreamRequest,
+) -> Result<ai::AssistantMessage, CompactionError> {
+    let response = provider.stream(request).map_err(|error| {
+        CompactionError::new(
+            CompactionErrorCode::SummarizationFailed,
+            format!("Summarization failed: {error}"),
+        )
+    })?;
+    ai::stream::provider_events_to_stream(response)
+        .map_err(|error| {
+            CompactionError::new(
+                CompactionErrorCode::SummarizationFailed,
+                format!("Summarization failed: {error}"),
+            )
+        })?
+        .into_result()
+        .ok_or_else(|| {
+            CompactionError::new(
+                CompactionErrorCode::SummarizationFailed,
+                "Summarization failed: stream ended without final result",
+            )
+        })
+}
+
+fn map_summary_message(
+    message: ai::AssistantMessage,
+    operation: &str,
+) -> Result<String, CompactionError> {
+    match message.stop_reason {
+        AssistantStopReason::Aborted => {
+            return Err(CompactionError::new(
+                CompactionErrorCode::Aborted,
+                message
+                    .error_message
+                    .unwrap_or_else(|| format!("{operation} aborted")),
+            ));
+        }
+        AssistantStopReason::Error => {
+            return Err(CompactionError::new(
+                CompactionErrorCode::SummarizationFailed,
+                format!(
+                    "{operation} failed: {}",
+                    message
+                        .error_message
+                        .unwrap_or_else(|| "Unknown error".to_string())
+                ),
+            ));
+        }
+        _ => {}
+    }
+
+    if !message.content.is_empty() {
+        return Ok(message.content);
+    }
+    Ok(message
+        .content_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ai::AssistantContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 fn agent_messages_to_summary_rich_messages(messages: &[AgentMessage]) -> Vec<RichMessage> {
@@ -985,14 +1277,18 @@ mod tests {
     #[derive(Debug, Clone)]
     struct BranchSummaryProvider {
         requests: Arc<Mutex<Vec<StreamRequest>>>,
-        events: Vec<StreamEvent>,
+        responses: Arc<Mutex<Vec<Vec<StreamEvent>>>>,
     }
 
     impl BranchSummaryProvider {
         fn new(events: Vec<StreamEvent>) -> Self {
+            Self::new_sequence(vec![events])
+        }
+
+        fn new_sequence(responses: Vec<Vec<StreamEvent>>) -> Self {
             Self {
                 requests: Arc::new(Mutex::new(Vec::new())),
-                events,
+                responses: Arc::new(Mutex::new(responses)),
             }
         }
     }
@@ -1000,7 +1296,12 @@ mod tests {
     impl LanguageModelProvider for BranchSummaryProvider {
         fn stream(&self, request: StreamRequest) -> AiResult<Vec<StreamEvent>> {
             self.requests.lock().expect("requests lock").push(request);
-            Ok(self.events.clone())
+            let mut responses = self.responses.lock().expect("responses lock");
+            if responses.len() > 1 {
+                Ok(responses.remove(0))
+            } else {
+                Ok(responses.first().cloned().unwrap_or_default())
+            }
         }
     }
 
@@ -1351,6 +1652,110 @@ mod tests {
 
         assert_eq!(error.code, BranchSummaryErrorCode::SummarizationFailed);
         assert!(error.message.contains("provider failed"));
+    }
+
+    #[test]
+    fn generate_summary_includes_previous_summary_and_custom_focus_like_pi() {
+        let provider = BranchSummaryProvider::new(vec![StreamEvent::Finished {
+            message: ai::Message {
+                role: MessageRole::Assistant,
+                content: "Updated compaction summary".to_string(),
+            },
+        }]);
+        let messages = vec![message(MessageRole::User, "new progress")];
+
+        let summary = generate_summary(
+            &messages,
+            &provider,
+            summary_model(32_000),
+            GenerateSummaryOptions {
+                custom_instructions: Some("focus on migration gaps".to_string()),
+                previous_summary: Some("old compacted context".to_string()),
+                reserve_tokens: 10_000,
+            },
+        )
+        .expect("summary should generate");
+
+        assert_eq!(summary, "Updated compaction summary");
+        let requests = provider.requests.lock().expect("requests lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages.len(), 2);
+        assert_eq!(requests[0].messages[0].role, MessageRole::System);
+        assert_eq!(requests[0].messages[0].content, SUMMARIZATION_SYSTEM_PROMPT);
+        assert!(requests[0].messages[1]
+            .content
+            .contains("<conversation>\n[User]: new progress\n</conversation>"));
+        assert!(requests[0].messages[1]
+            .content
+            .contains("<previous-summary>\nold compacted context\n</previous-summary>"));
+        assert!(requests[0].messages[1]
+            .content
+            .contains("Additional focus: focus on migration gaps"));
+        assert_eq!(requests[0].model.max_tokens, Some(8_000));
+    }
+
+    #[test]
+    fn compact_combines_split_turn_summary_and_file_tags_like_pi() {
+        let provider = BranchSummaryProvider::new_sequence(vec![
+            vec![StreamEvent::Finished {
+                message: ai::Message {
+                    role: MessageRole::Assistant,
+                    content: "History summary".to_string(),
+                },
+            }],
+            vec![StreamEvent::Finished {
+                message: ai::Message {
+                    role: MessageRole::Assistant,
+                    content: "Turn prefix summary".to_string(),
+                },
+            }],
+        ]);
+        let preparation = CompactionPreparation {
+            first_kept_entry_id: "kept-entry".to_string(),
+            messages_to_summarize: vec![message(MessageRole::User, "old work")],
+            turn_prefix_messages: vec![message(MessageRole::User, "split turn request")],
+            is_split_turn: true,
+            tokens_before: 12_345,
+            previous_summary: None,
+            file_ops: FileOperations {
+                read: BTreeMap::from([("read.md".to_string(), ())])
+                    .into_keys()
+                    .collect(),
+                written: BTreeMap::from([("write.md".to_string(), ())])
+                    .into_keys()
+                    .collect(),
+                edited: BTreeMap::from([("edit.md".to_string(), ())])
+                    .into_keys()
+                    .collect(),
+            },
+            settings: CompactionSettings {
+                enabled: true,
+                reserve_tokens: 10_000,
+                keep_recent_tokens: 2_000,
+            },
+        };
+
+        let result = compact(
+            preparation,
+            &provider,
+            summary_model(32_000),
+            CompactOptions::default(),
+        )
+        .expect("compaction should generate");
+
+        assert_eq!(result.first_kept_entry_id, "kept-entry");
+        assert_eq!(result.tokens_before, 12_345);
+        assert_eq!(result.details.read_files, vec!["read.md"]);
+        assert_eq!(result.details.modified_files, vec!["edit.md", "write.md"]);
+        assert!(result.summary.contains(
+            "History summary\n\n---\n\n**Turn Context (split turn):**\n\nTurn prefix summary"
+        ));
+        assert!(result
+            .summary
+            .contains("<read-files>\nread.md\n</read-files>"));
+        assert!(result
+            .summary
+            .contains("<modified-files>\nedit.md\nwrite.md\n</modified-files>"));
     }
 
     #[test]
