@@ -3,7 +3,7 @@ use super::lifecycle::{
     install, is_offline_mode_enabled, update_with_scope, PackageLifecycleError,
 };
 use super::manifest::read_pi_manifest;
-use super::paths::display_path;
+use super::paths::{display_path, resolve_package_local_path};
 use super::resolver::{merge_paths, resolve_source_at_path, sort_resolved_paths};
 use super::source::{
     git_install_path, managed_npm_install_path, package_source_base_dir, parse_source,
@@ -12,7 +12,6 @@ use super::types::{
     MissingSourceAction, NpmCommandConfig, PackageFilter, ParsedSource, PathMetadata,
     ProgressEvent, ResolvedPaths, ResolvedResource, SourceOrigin, SourceScope,
 };
-use crate::utils::paths::resolve_path;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -128,7 +127,7 @@ fn ensure_source_installed<R: PackageCommandRunner + ?Sized>(
     match parse_source(source) {
         ParsedSource::Local(local) => {
             let base = package_source_base_dir(agent_dir, cwd, scope);
-            let path = resolve_path(&local.path, base, None);
+            let path = resolve_package_local_path(&local.path, base);
             Ok(path.exists().then_some(path))
         }
         ParsedSource::Npm(npm) => {
@@ -761,6 +760,50 @@ mod tests {
 
         assert_eq!(resolved.prompts.len(), 1);
         assert_eq!(runner.calls.borrow().len(), 1);
+        assert!(handler.seen.is_empty());
+    }
+
+    #[test]
+    fn temporary_pinned_git_source_does_not_refresh_cached_checkout_like_pi() {
+        let cwd = temp_dir();
+        let repo_name = format!(
+            "repo-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be valid")
+                .as_nanos()
+        );
+        let source = format!("git:https://github.com/user/{repo_name}@main");
+        let target = match parse_source(&source) {
+            ParsedSource::Git(source) => {
+                git_install_path("/agent", &cwd, &source, SourceScope::Temporary)
+            }
+            other => panic!("expected git source, got {other:?}"),
+        };
+        fs::create_dir_all(target.join("prompts")).expect("git target prompts");
+        fs::write(target.join("prompts").join("review.md"), "").expect("resource write");
+        let runner = FakeRunner::default();
+        let mut handler = Handler {
+            action: MissingSourceAction::Error,
+            seen: Vec::new(),
+        };
+
+        let resolved = resolve_package_sources(
+            &runner,
+            &mut handler,
+            "/agent",
+            &cwd,
+            &[(source, SourceScope::Temporary, None)],
+            None,
+            |_| {},
+        )
+        .expect("pinned cached checkout should resolve without refresh");
+
+        assert_eq!(resolved.prompts.len(), 1);
+        assert!(
+            runner.calls.borrow().is_empty(),
+            "pinned temporary git source should not run refresh commands"
+        );
         assert!(handler.seen.is_empty());
     }
 

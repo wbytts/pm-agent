@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::model_catalog::builtin_models;
 use crate::providers::{
@@ -18,6 +19,47 @@ pub struct ApiProviderInfo {
     pub source_id: Option<String>,
 }
 
+pub trait DynamicProvider: Send + Sync {
+    fn api(&self) -> &str;
+    fn stream(&self, request: StreamRequest) -> AiResult<Vec<StreamEvent>>;
+}
+
+#[derive(Clone)]
+pub struct RegisteredDynamicProvider {
+    api: String,
+    stream_fn: Arc<dyn Fn(StreamRequest) -> AiResult<Vec<StreamEvent>> + Send + Sync>,
+}
+
+impl std::fmt::Debug for RegisteredDynamicProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredDynamicProvider")
+            .field("api", &self.api)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RegisteredDynamicProvider {
+    pub fn new(
+        api: impl Into<String>,
+        stream_fn: impl Fn(StreamRequest) -> AiResult<Vec<StreamEvent>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            api: api.into(),
+            stream_fn: Arc::new(stream_fn),
+        }
+    }
+}
+
+impl DynamicProvider for RegisteredDynamicProvider {
+    fn api(&self) -> &str {
+        &self.api
+    }
+
+    fn stream(&self, request: StreamRequest) -> AiResult<Vec<StreamEvent>> {
+        (self.stream_fn)(request)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RegisteredProvider {
     Echo(EchoProvider),
@@ -32,10 +74,11 @@ pub enum RegisteredProvider {
     GoogleGenerativeAi(GoogleGenerativeAiProvider),
     GoogleVertex(GoogleVertexProvider),
     BedrockConverse(BedrockConverseProvider),
+    Dynamic(RegisteredDynamicProvider),
 }
 
 impl RegisteredProvider {
-    pub fn api(&self) -> &'static str {
+    pub fn api(&self) -> &str {
         match self {
             RegisteredProvider::Echo(_) => "local-echo",
             RegisteredProvider::Faux(_) => "faux",
@@ -49,6 +92,7 @@ impl RegisteredProvider {
             RegisteredProvider::GoogleGenerativeAi(_) => "google-generative-ai",
             RegisteredProvider::GoogleVertex(_) => "google-vertex",
             RegisteredProvider::BedrockConverse(_) => "bedrock-converse-stream",
+            RegisteredProvider::Dynamic(provider) => provider.api(),
         }
     }
 }
@@ -75,6 +119,7 @@ impl LanguageModelProvider for RegisteredProvider {
             RegisteredProvider::GoogleGenerativeAi(provider) => provider.stream(request),
             RegisteredProvider::GoogleVertex(provider) => provider.stream(request),
             RegisteredProvider::BedrockConverse(provider) => provider.stream(request),
+            RegisteredProvider::Dynamic(provider) => provider.stream(request),
         }
     }
 }
@@ -166,6 +211,14 @@ impl ProviderRegistry {
     pub fn unregister_source(&mut self, source_id: &str) {
         self.providers
             .retain(|_, (_, source)| source.as_deref() != Some(source_id));
+    }
+
+    pub fn restore_builtin_api(&mut self, api: &str) {
+        if let Some(provider) = Self::builtins().get(api) {
+            self.register(provider, None);
+        } else {
+            self.providers.remove(api);
+        }
     }
 }
 
@@ -301,6 +354,72 @@ mod tests {
         ] {
             assert!(providers.iter().any(|api| api == expected));
         }
+    }
+
+    #[test]
+    fn dynamic_provider_overrides_and_restores_builtin_api_like_pi() {
+        let mut providers = ProviderRegistry::builtins();
+        providers.register(
+            RegisteredProvider::Dynamic(RegisteredDynamicProvider::new("local-echo", |_request| {
+                Ok(vec![StreamEvent::TextDelta {
+                    text: "dynamic".to_string(),
+                }])
+            })),
+            Some("provider:test".to_string()),
+        );
+        let model = Model {
+            id: "echo".to_string(),
+            provider: "local".to_string(),
+            api: "local-echo".to_string(),
+            display_name: "Echo".to_string(),
+            context_window: 32_000,
+            ..Model::default()
+        };
+
+        let overridden = providers
+            .provider_for(&model)
+            .expect("dynamic provider")
+            .stream(StreamRequest {
+                model: model.clone(),
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "hello".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: BTreeMap::new(),
+            })
+            .expect("dynamic stream");
+        assert_eq!(
+            overridden,
+            vec![StreamEvent::TextDelta {
+                text: "dynamic".to_string()
+            }]
+        );
+
+        providers.unregister_source("provider:test");
+        providers.restore_builtin_api("local-echo");
+        let restored = providers
+            .provider_for(&model)
+            .expect("restored provider")
+            .stream(StreamRequest {
+                model,
+                messages: vec![Message {
+                    role: MessageRole::User,
+                    content: "hello".to_string(),
+                }],
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: BTreeMap::new(),
+            })
+            .expect("restored stream");
+
+        assert_ne!(
+            restored,
+            vec![StreamEvent::TextDelta {
+                text: "dynamic".to_string()
+            }]
+        );
     }
 
     #[test]

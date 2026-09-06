@@ -13,6 +13,22 @@ pub enum ResolvedSession {
     NotFound { arg: String },
 }
 
+pub fn load_entries_from_file(path: &Path) -> Vec<Value> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let entries = parse_session_values_lenient(&content);
+    let Some(header) = entries.first() else {
+        return entries;
+    };
+    if header.get("type").and_then(Value::as_str) != Some("session")
+        || header.get("id").and_then(Value::as_str).is_none()
+    {
+        return Vec::new();
+    }
+    entries
+}
+
 pub fn find_most_recent_session(session_dir: &Path) -> Option<PathBuf> {
     let entries = fs::read_dir(session_dir).ok()?;
     entries
@@ -458,6 +474,42 @@ mod tests {
         assert_eq!(sessions[0].message_count, 1);
         assert_eq!(sessions[0].first_message, "kept");
         assert_eq!(sessions[0].modified_millis, 2000);
+    }
+
+    #[test]
+    fn load_entries_from_file_matches_pi_lenient_jsonl_loader() {
+        let dir = temp_dir("load-entries");
+        assert!(load_entries_from_file(&dir.join("missing.jsonl")).is_empty());
+
+        let empty = dir.join("empty.jsonl");
+        fs::write(&empty, "").expect("empty file should write");
+        assert!(load_entries_from_file(&empty).is_empty());
+
+        let no_header = dir.join("no-header.jsonl");
+        fs::write(&no_header, r#"{"type":"message","id":"1"}"#)
+            .expect("no-header file should write");
+        assert!(load_entries_from_file(&no_header).is_empty());
+
+        let malformed = dir.join("malformed.jsonl");
+        fs::write(&malformed, "not json\n").expect("malformed file should write");
+        assert!(load_entries_from_file(&malformed).is_empty());
+
+        let mixed = dir.join("mixed.jsonl");
+        fs::write(
+            &mixed,
+            concat!(
+                r#"{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}"#,
+                "\nnot valid json\n",
+                r#"{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"hi","timestamp":1}}"#,
+                "\n"
+            ),
+        )
+        .expect("mixed file should write");
+
+        let entries = load_entries_from_file(&mixed);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["type"], "session");
+        assert_eq!(entries[1]["type"], "message");
     }
 
     fn write_session_file(

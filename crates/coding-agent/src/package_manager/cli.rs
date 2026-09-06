@@ -1865,6 +1865,98 @@ mod tests {
     }
 
     #[test]
+    fn self_update_display_quotes_npm_prefix_paths_like_pi_config() {
+        let prefix = "/tmp/pi prefix 123".to_string();
+
+        let command = self_update_command_for_method(
+            InstallMethod::Npm,
+            "@earendil-works/pi-coding-agent",
+            "@earendil-works/pi-coding-agent",
+            None,
+            Some(prefix.clone()),
+        )
+        .expect("npm self-update should be planned");
+
+        assert_eq!(
+            command.args,
+            vec![
+                "--prefix".to_string(),
+                prefix.clone(),
+                "install".to_string(),
+                "-g".to_string(),
+                "--ignore-scripts".to_string(),
+                "@earendil-works/pi-coding-agent".to_string(),
+            ]
+        );
+        assert_eq!(
+            command.display,
+            format!(
+                "npm --prefix \"{prefix}\" install -g --ignore-scripts @earendil-works/pi-coding-agent"
+            )
+        );
+    }
+
+    #[test]
+    fn self_update_accepts_pnpm_v11_store_package_with_global_entrypoint_like_pi_config() {
+        let root = temp_dir("pnpm-v11-store-self-update");
+        let global_package_dir = root
+            .join("Library")
+            .join("pnpm")
+            .join("global")
+            .join("v11")
+            .join("11e9a")
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        let store_package_dir = root
+            .join("Library")
+            .join("pnpm")
+            .join("store")
+            .join("v11")
+            .join("links")
+            .join("@earendil-works")
+            .join("pi-coding-agent")
+            .join("0.75.0")
+            .join("hash")
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        let entrypoint = global_package_dir.join("dist").join("cli.js");
+        std::fs::create_dir_all(entrypoint.parent().expect("entrypoint parent"))
+            .expect("global package dist should be created");
+        std::fs::create_dir_all(&store_package_dir).expect("store package should be created");
+        std::fs::write(global_package_dir.join("package.json"), "{}")
+            .expect("global package.json should be written");
+
+        let candidates =
+            self_update_package_dir_candidates(&store_package_dir, Some(&entrypoint), false);
+        let global_root = root
+            .join("Library")
+            .join("pnpm")
+            .join("global")
+            .join("v11")
+            .to_string_lossy()
+            .to_string();
+
+        let command = self_update_command_from_context(
+            InstallMethod::Pnpm,
+            "@earendil-works/pi-coding-agent",
+            "@earendil-works/pi-coding-agent",
+            None,
+            &candidates,
+            &[global_root],
+            true,
+            false,
+        )
+        .expect("pnpm v11 store install should be managed by the global entrypoint");
+
+        assert_eq!(
+            command.display,
+            "pnpm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+        );
+    }
+
+    #[test]
     fn plans_global_package_roots_probe_like_pi_config() {
         assert_eq!(
             global_package_roots_plan(InstallMethod::Npm, None, "/home/me", None),

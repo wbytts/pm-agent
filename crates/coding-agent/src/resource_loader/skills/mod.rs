@@ -315,6 +315,30 @@ mod tests {
     }
 
     #[test]
+    fn ignore_globs_skip_matching_root_markdown_files_like_pi() {
+        let dir = temp_dir();
+        let kept = dir.join("kept");
+        fs::create_dir_all(&kept).expect("kept dir");
+        fs::write(dir.join(".ignore"), "root-*.md\n").expect("ignore");
+        fs::write(
+            dir.join("root-ignored.md"),
+            "---\nname: ignored-file\ndescription: Ignored file\n---\nIgnored",
+        )
+        .expect("ignored root md");
+        fs::write(
+            kept.join("SKILL.md"),
+            "---\nname: kept-skill\ndescription: Kept skill\n---\nKept",
+        )
+        .expect("kept skill");
+
+        let (skills, diagnostics) = load_skills(vec![dir]);
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "kept-skill");
+    }
+
+    #[test]
     fn parses_disable_model_invocation_frontmatter() {
         let dir = temp_dir();
         fs::write(

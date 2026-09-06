@@ -284,6 +284,40 @@ mod tests {
     }
 
     #[test]
+    fn truncates_tail_oversized_single_line_with_trailing_newline_like_pi() {
+        let input = format!("{}\n", "X".repeat(300_000));
+        let result = truncate_tail(
+            &input,
+            TruncationOptions {
+                max_lines: 100,
+                max_bytes: 1024,
+            },
+        );
+
+        assert_eq!(result.content, "X".repeat(1024));
+        assert_eq!(result.output_bytes, 1024);
+        assert_eq!(result.output_lines, 1);
+        assert!(result.last_line_partial);
+        assert_eq!(result.truncated_by, Some(TruncatedBy::Bytes));
+    }
+
+    #[test]
+    fn ignores_trailing_newline_for_tool_line_count_like_pi() {
+        let result = truncate_head(
+            "one\n",
+            TruncationOptions {
+                max_lines: 1,
+                max_bytes: 100,
+            },
+        );
+
+        assert_eq!(result.content, "one\n");
+        assert!(!result.truncated);
+        assert_eq!(result.total_lines, 1);
+        assert_eq!(result.output_lines, 1);
+    }
+
+    #[test]
     fn formats_sizes_like_pi() {
         assert_eq!(format_size(12), "12B");
         assert_eq!(format_size(1536), "1.5KB");

@@ -1,7 +1,7 @@
 use super::types::{LocalSource, NpmSource, ParsedSource, SourceScope};
 use crate::settings_manager::CONFIG_DIR_NAME;
 use crate::utils::git::{parse_git_url, GitSource};
-use crate::utils::paths::{is_local_path, resolve_path};
+use crate::utils::paths::is_local_path;
 use std::path::{Path, PathBuf};
 
 pub fn parse_source(source: &str) -> ParsedSource {
@@ -120,10 +120,9 @@ where
             path.exists().then_some(path)
         }
         ParsedSource::Local(source) => {
-            let path = resolve_path(
+            let path = super::paths::resolve_package_local_path(
                 &source.path,
                 package_source_base_dir(agent_dir, cwd, scope),
-                None,
             );
             path.exists().then_some(path)
         }
@@ -143,7 +142,7 @@ pub fn source_identity_from_base(source: &str, base_dir: impl AsRef<Path>) -> St
         ParsedSource::Npm(source) => format!("npm:{}", source.name),
         ParsedSource::Git(source) => format!("git:{}/{}", source.host, source.path),
         ParsedSource::Local(source) => {
-            let resolved = resolve_path(&source.path, base_dir, None);
+            let resolved = super::paths::resolve_package_local_path(&source.path, base_dir);
             format!("local:{}", display_path(&resolved))
         }
     }
@@ -369,6 +368,18 @@ mod tests {
             parse_source("git@github.com:user/repo@main"),
             ParsedSource::Local(_)
         ));
+    }
+
+    #[test]
+    fn local_source_path_preserves_original_whitespace_like_pi() {
+        match parse_source("./local ") {
+            ParsedSource::Local(source) => assert_eq!(source.path, "./local "),
+            other => panic!("expected local source, got {other:?}"),
+        }
+        match parse_source(" bare-name ") {
+            ParsedSource::Local(source) => assert_eq!(source.path, " bare-name "),
+            other => panic!("expected local source, got {other:?}"),
+        }
     }
 
     #[test]

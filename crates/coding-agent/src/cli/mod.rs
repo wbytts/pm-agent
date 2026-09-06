@@ -5,8 +5,8 @@ mod list_models;
 mod session_manager;
 
 pub use args::{
-    is_valid_thinking_level, parse_args, resolve_app_mode, AppMode, CliArgs, CliDiagnostic,
-    CliDiagnosticType, CliMode, UnknownFlagValue,
+    help_output_target, is_valid_thinking_level, parse_args, resolve_app_mode, AppMode, CliArgs,
+    CliDiagnostic, CliDiagnosticType, CliHelpOutput, CliMode, UnknownFlagValue,
 };
 pub use file_processor::{process_file_arguments, ProcessFileOptions, ProcessedFiles};
 pub use initial_message::{build_initial_message, InitialMessageInput, InitialMessageResult};

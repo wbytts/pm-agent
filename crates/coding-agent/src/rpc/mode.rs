@@ -1,6 +1,6 @@
 use crate::rpc::dispatcher::{RpcDispatcher, RpcSessionBackend};
 use crate::rpc::jsonl::{serialize_json_line, JsonlLineReader};
-use crate::rpc::types::{RpcCommand, RpcExtensionUiResponse, RpcResponse};
+use crate::rpc::types::{RpcCommand, RpcCommandType, RpcExtensionUiResponse, RpcResponse};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RpcModeOutput {
@@ -106,38 +106,10 @@ fn is_extension_ui_response(value: &serde_json::Value) -> bool {
 
 fn unknown_command_type(value: &serde_json::Value) -> Option<&str> {
     let command_type = value.get("type").and_then(serde_json::Value::as_str)?;
-    let known = [
-        "prompt",
-        "steer",
-        "follow_up",
-        "abort",
-        "new_session",
-        "get_state",
-        "set_model",
-        "cycle_model",
-        "get_available_models",
-        "set_thinking_level",
-        "cycle_thinking_level",
-        "set_steering_mode",
-        "set_follow_up_mode",
-        "compact",
-        "set_auto_compaction",
-        "set_auto_retry",
-        "abort_retry",
-        "bash",
-        "abort_bash",
-        "get_session_stats",
-        "export_html",
-        "switch_session",
-        "fork",
-        "clone",
-        "get_fork_messages",
-        "get_last_assistant_text",
-        "set_session_name",
-        "get_messages",
-        "get_commands",
-    ];
-    (!known.contains(&command_type)).then_some(command_type)
+    (!RpcCommandType::all()
+        .iter()
+        .any(|known| known.as_str() == command_type))
+    .then_some(command_type)
 }
 
 fn escape_json_string(value: &str) -> String {
@@ -243,6 +215,54 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_all_rpc_command_types_before_deserializing() {
+        for command_type in RpcCommandType::all() {
+            assert_eq!(
+                unknown_command_type(&json_type(command_type.as_str())),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn migrated_commands_reach_dispatcher_in_rpc_mode() {
+        let cases = [
+            ("reload", "{\"type\":\"reload\",\"id\":\"reload\"}\n"),
+            (
+                "share_session",
+                "{\"type\":\"share_session\",\"id\":\"share\"}\n",
+            ),
+            (
+                "import_session",
+                "{\"type\":\"import_session\",\"id\":\"import\",\"input_path\":\"/tmp/session.jsonl\"}\n",
+            ),
+            (
+                "navigate_tree",
+                "{\"type\":\"navigate_tree\",\"id\":\"tree\",\"target_id\":\"entry-1\"}\n",
+            ),
+            (
+                "copy_last_assistant_text",
+                "{\"type\":\"copy_last_assistant_text\",\"id\":\"copy\"}\n",
+            ),
+        ];
+
+        for (command, line) in cases {
+            let mut mode = RpcMode::new(TestBackend::default());
+            let outputs = mode.push_str(line);
+
+            assert_eq!(outputs.len(), 1, "{command}");
+            assert!(
+                outputs[0]
+                    .line
+                    .contains(&format!("\"command\":\"{command}\"")),
+                "{}",
+                outputs[0].line
+            );
+            assert!(!outputs[0].line.contains("Unknown command"), "{command}");
+        }
+    }
+
+    #[test]
     fn finishes_partial_line() {
         let mut mode = RpcMode::new(TestBackend::default());
         assert!(mode
@@ -252,5 +272,9 @@ mod tests {
 
         assert_eq!(outputs.len(), 1);
         assert!(outputs[0].line.contains("\"command\":\"get_state\""));
+    }
+
+    fn json_type(command_type: &str) -> serde_json::Value {
+        serde_json::json!({ "type": command_type })
     }
 }

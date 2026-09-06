@@ -1,11 +1,13 @@
 use agent::AgentMessage;
 use ai::MessageRole;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 const TOOL_RESULT_MAX_CHARS: usize = 2000;
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileOperations {
     pub read: BTreeSet<String>,
     pub written: BTreeSet<String>,

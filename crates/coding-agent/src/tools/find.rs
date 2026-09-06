@@ -2,10 +2,11 @@ use std::fs;
 use std::path::Path;
 
 use crate::tools::common::{
-    glob_match, relative_display, success, truncate_list_output, IgnoreMatcher,
+    glob_match, relative_display, success, truncate_list_output_with_details, IgnoreMatcher,
 };
 use crate::types::{CodingAgentError, CodingAgentResult, CodingToolResult, CodingWorkspace};
 use crate::workspace::resolve_workspace_path;
+use serde_json::{json, Map, Value};
 
 pub fn find_files(
     workspace: &CodingWorkspace,
@@ -48,7 +49,21 @@ pub fn find_files(
             limit * 2
         ));
     }
-    success(truncate_list_output(&results.join("\n"), notices))
+    let list_output = truncate_list_output_with_details(&results.join("\n"), notices);
+    let mut details = Map::new();
+    if reached_limit {
+        details.insert("resultLimitReached".to_string(), Value::from(limit));
+    }
+    if list_output.truncation.truncated {
+        details.insert("truncation".to_string(), json!(list_output.truncation));
+    }
+
+    Ok(CodingToolResult {
+        success: true,
+        output: list_output.output,
+        details: (!details.is_empty()).then_some(Value::Object(details)),
+        content: None,
+    })
 }
 
 fn effective_find_pattern(pattern: &str) -> String {
@@ -74,12 +89,15 @@ fn collect_find_results(
     if results.len() >= limit {
         return Ok(());
     }
-    for entry in fs::read_dir(current)
+    let mut entries = fs::read_dir(current)
         .map_err(|error| {
             CodingAgentError::File(format!("读取目录 {} 失败：{error}", current.display()))
         })?
         .filter_map(Result::ok)
-    {
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
+
+    for entry in entries {
         let path = entry.path();
         if ignore.is_ignored(root, &path) {
             continue;

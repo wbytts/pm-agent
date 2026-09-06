@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
+
+use super::app_config::{bin_dir, AppConfigPaths};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellConfig {
@@ -128,6 +131,44 @@ pub fn sanitize_binary_output(value: &str) -> String {
         .collect()
 }
 
+pub fn get_shell_env() -> Vec<(String, String)> {
+    let home_dir = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    get_shell_env_with_config(std::env::vars(), &AppConfigPaths::new(home_dir))
+}
+
+fn get_shell_env_with_config<I, K, V>(env: I, config: &AppConfigPaths) -> Vec<(String, String)>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: Into<String>,
+    V: Into<String>,
+{
+    let mut vars = env
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect::<BTreeMap<_, _>>();
+    let path_key = vars
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case("path"))
+        .cloned()
+        .unwrap_or_else(|| "PATH".to_string());
+    let current_path = vars.get(&path_key).cloned().unwrap_or_default();
+    let bin_dir = bin_dir(config).to_string_lossy().to_string();
+    let has_bin_dir =
+        std::env::split_paths(&current_path).any(|entry| entry.to_string_lossy() == bin_dir);
+    if !has_bin_dir {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        let updated_path = if current_path.is_empty() {
+            bin_dir
+        } else {
+            format!("{bin_dir}{separator}{current_path}")
+        };
+        vars.insert(path_key, updated_path);
+    }
+    vars.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +194,46 @@ mod tests {
     #[test]
     fn sanitize_binary_output_keeps_delete_character_like_pi() {
         assert_eq!(sanitize_binary_output("a\u{007f}b"), "a\u{007f}b");
+    }
+
+    #[test]
+    fn shell_env_prepends_agent_bin_to_path_like_pi() {
+        let config = AppConfigPaths::new("/home/alice");
+
+        let env = get_shell_env_with_config([("PATH", "/usr/bin")], &config);
+        let path = env
+            .iter()
+            .find(|(key, _)| key == "PATH")
+            .map(|(_, value)| value.as_str())
+            .expect("PATH should exist");
+
+        assert!(path.starts_with("/home/alice/.pi/agent/bin"));
+        assert!(path.ends_with("/usr/bin"));
+    }
+
+    #[test]
+    fn shell_env_preserves_existing_case_insensitive_path_key_like_pi() {
+        let config = AppConfigPaths::new("C:\\Users\\Alice");
+
+        let env = get_shell_env_with_config([("Path", "C:\\Windows")], &config);
+
+        assert!(env.iter().any(|(key, _)| key == "Path"));
+        assert!(!env.iter().any(|(key, _)| key == "PATH"));
+    }
+
+    #[test]
+    fn shell_env_does_not_duplicate_agent_bin_like_pi() {
+        let config = AppConfigPaths::new("/home/alice");
+        let path = "/home/alice/.pi/agent/bin:/usr/bin";
+
+        let env = get_shell_env_with_config([("PATH", path)], &config);
+
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "PATH")
+                .map(|(_, value)| value.as_str()),
+            Some(path)
+        );
     }
 
     #[test]

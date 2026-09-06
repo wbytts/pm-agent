@@ -564,6 +564,46 @@ mod tests {
     }
 
     #[test]
+    fn git_ensure_ref_does_not_reset_matching_annotated_tag_checkout_like_pi() {
+        let root = temp_dir();
+        let remote = root.join("remote");
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&remote).expect("remote dir should be created");
+        git(&remote, &["init", "--initial-branch=main"]);
+        git(&remote, &["config", "user.email", "test@test.com"]);
+        git(&remote, &["config", "user.name", "Test"]);
+        let tagged_commit = write_commit(&remote, "extension.ts", "// v1", "v1");
+        git(&remote, &["tag", "-a", "v1", "-m", "v1"]);
+
+        git(
+            &root,
+            &["clone", remote.to_string_lossy().as_ref(), "checkout"],
+        );
+        git(&checkout, &["checkout", "v1"]);
+        assert_eq!(git_output(&checkout, &["rev-parse", "HEAD"]), tagged_commit);
+
+        let step = PackageCommandStep {
+            command: "git_ensure_ref".to_string(),
+            args: vec![
+                "FETCH_HEAD^{commit}".to_string(),
+                "--".to_string(),
+                "fetch".to_string(),
+                "origin".to_string(),
+                "v1".to_string(),
+            ],
+            cwd: Some(checkout.to_string_lossy().to_string()),
+        };
+
+        let result = PackageCommandExecutor
+            .run(&step)
+            .expect("annotated tag update should succeed");
+
+        assert_eq!(result.stdout, "unchanged");
+        assert_eq!(git_output(&checkout, &["rev-parse", "HEAD"]), tagged_commit);
+        assert_eq!(read_file(&checkout, "extension.ts"), "// v1");
+    }
+
+    #[test]
     fn ensure_dir_creates_nested_directory_like_pi_git_install_parent() {
         let dir = temp_dir().join("git").join("github.com").join("user");
         let step = PackageCommandStep {
@@ -593,6 +633,26 @@ mod tests {
             .expect("argv should be passed without shell splitting");
 
         assert_eq!(result.stdout.trim(), value);
+    }
+
+    #[test]
+    fn command_runner_captures_startup_chatter_for_non_interactive_stdout_cleanliness_like_pi() {
+        let step = PackageCommandStep {
+            command: "sh".to_string(),
+            args: vec![
+                "-lc".to_string(),
+                "printf 'changed 1 package in 471ms\\n'; printf 'found 0 vulnerabilities\\n' >&2"
+                    .to_string(),
+            ],
+            cwd: None,
+        };
+
+        let result = PackageCommandExecutor
+            .run(&step)
+            .expect("startup package command output should be captured");
+
+        assert_eq!(result.stdout, "changed 1 package in 471ms\n");
+        assert_eq!(result.stderr, "found 0 vulnerabilities\n");
     }
 
     fn temp_dir() -> PathBuf {

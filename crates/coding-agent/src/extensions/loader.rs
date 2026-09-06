@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::source_info::create_synthetic_source_info;
 
@@ -37,12 +38,12 @@ pub fn load_extension_from_factory(
 }
 
 pub fn load_extensions(
-    factories: Vec<(String, Box<dyn ExtensionFactory>)>,
+    factories: &[(String, Arc<dyn ExtensionFactory>)],
     runtime: &mut ExtensionRuntime,
 ) -> LoadExtensionsResult {
     let mut result = LoadExtensionsResult::default();
     for (path, factory) in factories {
-        match load_extension_from_factory(path, factory.as_ref(), runtime) {
+        match load_extension_from_factory(path.clone(), factory.as_ref(), runtime) {
             Ok(extension) => result.extensions.push(extension),
             Err(error) => result.errors.push(error),
         }
@@ -91,8 +92,9 @@ mod tests {
         ExtensionFactory, ProviderConfig, ProviderModelConfig, ToolDefinition, ToolExecutor,
     };
     use crate::model_registry::ModelRegistry;
+    use ai::{LanguageModelProvider, ProviderRegistry, StreamEvent};
     use serde_json::{json, Value};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     struct DemoFactory;
 
@@ -154,11 +156,16 @@ mod tests {
                 "demo-provider",
                 ProviderConfig {
                     display_name: Some("Demo Provider".to_string()),
-                    models: vec![ProviderModelConfig {
+                    base_url: Some("https://provider.test/v1".to_string()),
+                    api_key: Some("literal-key".to_string()),
+                    api: Some("openai-chat-completions".to_string()),
+                    models: Some(vec![ProviderModelConfig {
                         id: "demo-model".to_string(),
                         display_name: Some("Demo Model".to_string()),
                         api: Some("openai-chat-completions".to_string()),
-                    }],
+                        ..ProviderModelConfig::default()
+                    }]),
+                    ..ProviderConfig::default()
                 },
             )
         }
@@ -419,7 +426,7 @@ mod tests {
         let extension =
             load_extension_from_factory("/tmp/provider.ts", &ProviderFactory, &mut runtime)
                 .expect("provider extension should load");
-        assert_eq!(runtime.pending_provider_registrations.len(), 1);
+        assert_eq!(runtime.pending_provider_registrations_len(), 1);
         let mut runner = crate::extensions::runner::ExtensionRunner::new(vec![extension], runtime);
         let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
         let mut registry = ModelRegistry::in_memory(storage);
@@ -427,7 +434,7 @@ mod tests {
 
         runner.flush_pending_provider_registrations(&mut registry);
 
-        assert!(runner.runtime().pending_provider_registrations.is_empty());
+        assert!(runner.runtime().pending_provider_registrations_is_empty());
         let model = registry
             .find("demo-provider", "demo-model")
             .expect("registered model should be available");
@@ -436,6 +443,196 @@ mod tests {
         runner.unregister_provider(&mut registry, "demo-provider");
 
         assert!(registry.find("demo-provider", "demo-model").is_none());
+    }
+
+    #[test]
+    fn runner_flushes_stream_simple_provider_to_api_registry_like_pi() {
+        let runtime = create_extension_runtime();
+        runtime.register_provider(
+            "stream-provider",
+            ProviderConfig {
+                api: Some("local-echo".to_string()),
+                stream_simple: Some(Arc::new(|_request| {
+                    Ok(vec![StreamEvent::TextDelta {
+                        text: "extension stream".to_string(),
+                    }])
+                })),
+                ..ProviderConfig::default()
+            },
+            "/tmp/stream-extension.ts",
+        );
+        let mut runner = crate::extensions::runner::ExtensionRunner::new(Vec::new(), runtime);
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let mut registry = ModelRegistry::in_memory(storage);
+        let mut providers = ProviderRegistry::builtins();
+        let model = ai::Model {
+            id: "echo".to_string(),
+            provider: "local".to_string(),
+            api: "local-echo".to_string(),
+            display_name: "Echo".to_string(),
+            context_window: 32_000,
+            ..ai::Model::default()
+        };
+
+        runner
+            .flush_pending_provider_registrations_with_api_providers(&mut registry, &mut providers);
+
+        let overridden = providers
+            .provider_for(&model)
+            .expect("provider")
+            .stream(ai::StreamRequest {
+                model: model.clone(),
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: Default::default(),
+            })
+            .expect("stream");
+        assert_eq!(
+            overridden,
+            vec![StreamEvent::TextDelta {
+                text: "extension stream".to_string()
+            }]
+        );
+
+        runner.unregister_provider_with_api_providers(
+            &mut registry,
+            &mut providers,
+            "stream-provider",
+        );
+        let restored = providers
+            .provider_for(&model)
+            .expect("provider")
+            .stream(ai::StreamRequest {
+                model,
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: Default::default(),
+            })
+            .expect("stream");
+        assert_ne!(
+            restored,
+            vec![StreamEvent::TextDelta {
+                text: "extension stream".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn runner_flushes_pending_provider_unregistration_to_api_registry_like_pi() {
+        let runtime = create_extension_runtime();
+        runtime.register_provider(
+            "stream-provider",
+            ProviderConfig {
+                api: Some("local-echo".to_string()),
+                stream_simple: Some(Arc::new(|_request| {
+                    Ok(vec![StreamEvent::TextDelta {
+                        text: "extension stream".to_string(),
+                    }])
+                })),
+                ..ProviderConfig::default()
+            },
+            "/tmp/stream-extension.ts",
+        );
+        let mut runner = crate::extensions::runner::ExtensionRunner::new(Vec::new(), runtime);
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let mut registry = ModelRegistry::in_memory(storage);
+        let mut providers = ProviderRegistry::builtins();
+        let model = ai::Model {
+            id: "echo".to_string(),
+            provider: "local".to_string(),
+            api: "local-echo".to_string(),
+            display_name: "Echo".to_string(),
+            context_window: 32_000,
+            ..ai::Model::default()
+        };
+        runner
+            .flush_pending_provider_registrations_with_api_providers(&mut registry, &mut providers);
+        let overridden = providers
+            .provider_for(&model)
+            .expect("provider")
+            .stream(ai::StreamRequest {
+                model: model.clone(),
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: Default::default(),
+            })
+            .expect("stream");
+        assert_eq!(
+            overridden,
+            vec![StreamEvent::TextDelta {
+                text: "extension stream".to_string()
+            }]
+        );
+
+        runner
+            .runtime()
+            .unregister_provider("stream-provider", "/tmp/stream-extension.ts");
+        runner
+            .flush_pending_provider_registrations_with_api_providers(&mut registry, &mut providers);
+
+        let restored = providers
+            .provider_for(&model)
+            .expect("provider")
+            .stream(ai::StreamRequest {
+                model,
+                messages: Vec::new(),
+                rich_messages: Vec::new(),
+                tools: Vec::new(),
+                metadata: Default::default(),
+            })
+            .expect("stream");
+        assert_ne!(
+            restored,
+            vec![StreamEvent::TextDelta {
+                text: "extension stream".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn runner_reports_invalid_pending_provider_registration_like_pi() {
+        let runtime = create_extension_runtime();
+        runtime.register_provider(
+            "broken-provider",
+            ProviderConfig {
+                api_key: Some("literal-key".to_string()),
+                api: Some("openai-completions".to_string()),
+                models: Some(vec![ProviderModelConfig {
+                    id: "broken-model".to_string(),
+                    name: Some("Broken Model".to_string()),
+                    ..ProviderModelConfig::default()
+                }]),
+                ..ProviderConfig::default()
+            },
+            "/tmp/broken-extension.ts",
+        );
+        let mut runner = crate::extensions::runner::ExtensionRunner::new(Vec::new(), runtime);
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let captured_errors = Arc::clone(&errors);
+        runner.on_error(move |error| {
+            captured_errors
+                .lock()
+                .expect("errors lock should not be poisoned")
+                .push(format!("{}: {}", error.extension_path, error.message));
+        });
+        let storage = AuthStorage::<InMemoryAuthStorageBackend>::in_memory(AuthStorageData::new());
+        let mut registry = ModelRegistry::in_memory(storage);
+
+        runner.flush_pending_provider_registrations(&mut registry);
+        registry.refresh();
+
+        assert!(runner.runtime().pending_provider_registrations_is_empty());
+        assert!(registry.find("broken-provider", "broken-model").is_none());
+        assert_eq!(
+            *errors.lock().expect("errors lock should not be poisoned"),
+            vec![
+                "/tmp/broken-extension.ts: Provider broken-provider: \"baseUrl\" is required when defining models."
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

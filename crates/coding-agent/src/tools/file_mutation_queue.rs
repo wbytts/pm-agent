@@ -118,4 +118,96 @@ mod tests {
 
         assert_eq!(fs::read_to_string(path).expect("read final"), "second");
     }
+
+    #[test]
+    fn allows_mutations_for_different_files_to_run_in_parallel_like_pi() {
+        let workspace = crate::tools::common::collect_temp_workspace("mutation-queue-parallel");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let first_path = workspace.join("first.txt");
+        let second_path = workspace.join("second.txt");
+        fs::write(&first_path, "start").expect("seed first file");
+        fs::write(&second_path, "start").expect("seed second file");
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (second_started_tx, second_started_rx) = mpsc::channel();
+        let (release_both_tx, release_both_rx) = mpsc::channel();
+
+        let first = thread::spawn(move || {
+            with_file_mutation_queue(&first_path, || {
+                first_started_tx.send(()).expect("send first start");
+                release_both_rx.recv().expect("wait release");
+                fs::write(&first_path, "first").map_err(|error| {
+                    CodingAgentError::File(format!("写入 {} 失败：{error}", first_path.display()))
+                })?;
+                Ok(())
+            })
+        });
+
+        first_started_rx.recv().expect("first started");
+        let second = thread::spawn(move || {
+            with_file_mutation_queue(&second_path, || {
+                second_started_tx.send(()).expect("send second start");
+                fs::write(&second_path, "second").map_err(|error| {
+                    CodingAgentError::File(format!("写入 {} 失败：{error}", second_path.display()))
+                })?;
+                Ok(())
+            })
+        });
+
+        second_started_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("second file should not wait for first file lock");
+        release_both_tx.send(()).expect("release first");
+        first.join().expect("first join").expect("first ok");
+        second.join().expect("second join").expect("second ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn serializes_mutations_for_symlink_aliases_like_pi() {
+        let workspace = crate::tools::common::collect_temp_workspace("mutation-queue-symlink");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let target_path = workspace.join("target.txt");
+        let symlink_path = workspace.join("alias.txt");
+        fs::write(&target_path, "start").expect("seed file");
+        std::os::unix::fs::symlink(&target_path, &symlink_path).expect("create symlink");
+        let (first_started_tx, first_started_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first_path = target_path.clone();
+
+        let first = thread::spawn(move || {
+            with_file_mutation_queue(&first_path, || {
+                first_started_tx.send(()).expect("send start");
+                release_first_rx.recv().expect("wait release");
+                fs::write(&first_path, "first").map_err(|error| {
+                    CodingAgentError::File(format!("写入 {} 失败：{error}", first_path.display()))
+                })?;
+                Ok(())
+            })
+        });
+
+        first_started_rx.recv().expect("first started");
+        let second_path = symlink_path.clone();
+        let second = thread::spawn(move || {
+            with_file_mutation_queue(&second_path, || {
+                fs::write(&second_path, "second").map_err(|error| {
+                    CodingAgentError::File(format!("写入 {} 失败：{error}", second_path.display()))
+                })?;
+                Ok(())
+            })
+        });
+
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            fs::read_to_string(&target_path).expect("read while locked"),
+            "start"
+        );
+        release_first_tx.send(()).expect("release first");
+        first.join().expect("first join").expect("first ok");
+        second.join().expect("second join").expect("second ok");
+
+        assert_eq!(
+            fs::read_to_string(target_path).expect("read final"),
+            "second"
+        );
+    }
 }

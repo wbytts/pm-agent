@@ -149,7 +149,6 @@ impl<B: AuthStorageBackend> AuthStorage<B> {
             }
             Err(error) => {
                 self.errors.push(error);
-                self.data.clear();
                 self.load_error = true;
             }
         }
@@ -461,5 +460,33 @@ mod tests {
                 key: "external".to_string()
             })
         );
+    }
+
+    #[test]
+    fn reload_error_preserves_in_memory_auth_and_blocks_overwrite_like_pi() {
+        let backend = SharedMemoryAuthBackend::new(Some(
+            r#"{"openai":{"type":"api_key","key":"openai-key"}}"#.to_string(),
+        ));
+        let mut storage = AuthStorage::from_backend(backend.clone());
+
+        backend.replace("{invalid-json".to_string());
+        storage.reload();
+
+        assert_eq!(
+            storage.get("openai"),
+            Some(&AuthCredential::ApiKey {
+                key: "openai-key".to_string()
+            })
+        );
+        assert_eq!(storage.drain_errors().len(), 1);
+        assert!(storage.drain_errors().is_empty());
+
+        storage.set(
+            "anthropic",
+            AuthCredential::ApiKey {
+                key: "anthropic-key".to_string(),
+            },
+        );
+        assert_eq!(backend.content().as_deref(), Some("{invalid-json"));
     }
 }

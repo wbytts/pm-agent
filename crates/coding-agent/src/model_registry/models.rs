@@ -21,10 +21,20 @@ pub(super) fn validate_config(config: &ModelsConfig) -> Result<(), String> {
         if models.is_empty()
             && provider_config.headers.is_none()
             && provider_config.name.is_none()
+            && provider_config.base_url.is_none()
+            && provider_config.compat.is_none()
             && !has_model_overrides
         {
             return Err(format!(
-                "Provider {provider}: must specify \"name\", \"headers\", \"modelOverrides\", or \"models\"."
+                "Provider {provider}: must specify \"baseUrl\", \"headers\", \"compat\", \"modelOverrides\", or \"models\"."
+            ));
+        }
+        if !built_in_providers.contains(provider)
+            && !models.is_empty()
+            && provider_config.base_url.is_none()
+        {
+            return Err(format!(
+                "Provider {provider}: \"baseUrl\" is required when defining custom models."
             ));
         }
         if !built_in_providers.contains(provider)
@@ -77,13 +87,22 @@ pub(super) fn parse_models(config: &ModelsConfig) -> Vec<Model> {
                 .clone()
                 .or_else(|| provider_config.api.clone())
                 .or_else(|| fallback.as_ref().map(|model| model.api.clone()));
+            let base_url = model_def
+                .base_url
+                .clone()
+                .or_else(|| provider_config.base_url.clone())
+                .or_else(|| fallback.as_ref().and_then(|model| model.base_url.clone()));
             if api.is_none() {
+                continue;
+            }
+            if base_url.is_none() {
                 continue;
             }
             let mut model = model_from_definition(provider, provider_config, model_def);
             if let Some(api) = api {
                 model.api = api;
             }
+            model.base_url = base_url;
             models.push(model);
         }
     }
@@ -124,7 +143,7 @@ pub(super) fn model_from_definition(
             .reasoning
             .map(|enabled| ModelReasoning { enabled }),
         thinking_level_map: parse_thinking_level_map(model_def.thinking_level_map.as_ref()),
-        compat: Default::default(),
+        compat: merge_compat(provider_config.compat.as_ref(), model_def.compat.as_ref()),
     }
 }
 
@@ -154,6 +173,7 @@ pub(super) fn apply_provider_override(
     if provider_override.base_url.is_some() {
         model.base_url = provider_override.base_url.clone();
     }
+    model.compat = merge_compat(Some(&model.compat), provider_override.compat.as_ref());
     model
 }
 
@@ -185,6 +205,7 @@ pub(super) fn apply_model_override(mut model: Model, model_override: &ModelOverr
     if let Some(headers) = &model_override.headers {
         model.headers.extend(headers.clone());
     }
+    model.compat = merge_compat(Some(&model.compat), model_override.compat.as_ref());
     if let Some(cost) = &model_override.cost {
         model.cost = ModelCost {
             input: cost.input.unwrap_or(model.cost.input),
@@ -194,6 +215,55 @@ pub(super) fn apply_model_override(mut model: Model, model_override: &ModelOverr
         };
     }
     model
+}
+
+fn merge_compat(
+    base: Option<&BTreeMap<String, serde_json::Value>>,
+    override_compat: Option<&BTreeMap<String, serde_json::Value>>,
+) -> BTreeMap<String, serde_json::Value> {
+    let mut merged = base.cloned().unwrap_or_default();
+    if let Some(override_compat) = override_compat {
+        merge_json_object(&mut merged, override_compat);
+    }
+    merged
+}
+
+fn merge_json_object(
+    base: &mut BTreeMap<String, serde_json::Value>,
+    override_object: &BTreeMap<String, serde_json::Value>,
+) {
+    for (key, override_value) in override_object {
+        match (base.get_mut(key), override_value) {
+            (
+                Some(serde_json::Value::Object(base_object)),
+                serde_json::Value::Object(override_object),
+            ) => {
+                merge_json_map(base_object, override_object);
+            }
+            _ => {
+                base.insert(key.clone(), override_value.clone());
+            }
+        }
+    }
+}
+
+fn merge_json_map(
+    base: &mut serde_json::Map<String, serde_json::Value>,
+    override_object: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (key, override_value) in override_object {
+        match (base.get_mut(key), override_value) {
+            (
+                Some(serde_json::Value::Object(base_object)),
+                serde_json::Value::Object(override_object),
+            ) => {
+                merge_json_map(base_object, override_object);
+            }
+            _ => {
+                base.insert(key.clone(), override_value.clone());
+            }
+        }
+    }
 }
 
 fn parse_thinking_level_map(

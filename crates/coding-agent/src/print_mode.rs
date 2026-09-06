@@ -51,6 +51,15 @@ pub fn render_print_text_output_from_last_message(
     }
 }
 
+pub fn finish_print_mode_output(
+    message: Option<&ai::RichMessage>,
+    mut emit_shutdown: impl FnMut(&str),
+) -> PrintTextOutput {
+    let output = render_print_text_output_from_last_message(message);
+    emit_shutdown("quit");
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +171,41 @@ mod tests {
                 exit_code: 0,
             }
         );
+    }
+
+    #[test]
+    fn print_mode_finish_emits_shutdown_for_success_and_error_like_pi() {
+        let success_message = ai::RichMessage::Assistant(assistant_message(
+            vec![AssistantContentBlock::Text(TextContent {
+                text: "done".to_string(),
+                text_signature: None,
+            })],
+            AssistantStopReason::Stop,
+            None,
+        ));
+        let mut shutdown_reasons = Vec::new();
+
+        let output = finish_print_mode_output(Some(&success_message), |reason| {
+            shutdown_reasons.push(reason.to_string())
+        });
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, "done\n");
+        assert_eq!(shutdown_reasons, vec!["quit"]);
+
+        let error_message = ai::RichMessage::Assistant(assistant_message(
+            Vec::new(),
+            AssistantStopReason::Error,
+            Some("provider failure"),
+        ));
+        let mut shutdown_reasons = Vec::new();
+
+        let output = finish_print_mode_output(Some(&error_message), |reason| {
+            shutdown_reasons.push(reason.to_string())
+        });
+
+        assert_eq!(output.exit_code, 1);
+        assert_eq!(output.stderr, "provider failure\n");
+        assert_eq!(shutdown_reasons, vec!["quit"]);
     }
 }

@@ -36,7 +36,8 @@ pub struct CutPointResult {
     pub is_split_turn: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionPreparation {
     pub first_kept_entry_id: String,
     pub messages_to_summarize: Vec<AgentMessage>,

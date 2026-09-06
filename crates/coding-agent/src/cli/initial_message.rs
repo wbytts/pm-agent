@@ -57,6 +57,37 @@ mod tests {
     }
 
     #[test]
+    fn merges_piped_stdin_with_first_cli_message_like_pi() {
+        let mut args = parse_args(&["Summarize the text given".to_string()]);
+        let result = build_initial_message(InitialMessageInput {
+            parsed: &mut args,
+            file_text: None,
+            file_images: Vec::new(),
+            stdin_content: Some("README contents\n".to_string()),
+        });
+
+        assert_eq!(
+            result.initial_message.as_deref(),
+            Some("README contents\nSummarize the text given")
+        );
+        assert!(args.messages.is_empty());
+    }
+
+    #[test]
+    fn uses_stdin_as_initial_prompt_without_cli_message_like_pi() {
+        let mut args = parse_args(&[]);
+        let result = build_initial_message(InitialMessageInput {
+            parsed: &mut args,
+            file_text: None,
+            file_images: Vec::new(),
+            stdin_content: Some("README contents".to_string()),
+        });
+
+        assert_eq!(result.initial_message.as_deref(), Some("README contents"));
+        assert!(args.messages.is_empty());
+    }
+
+    #[test]
     fn returns_none_without_content() {
         let mut args = parse_args(&[]);
         let result = build_initial_message(InitialMessageInput {

@@ -227,6 +227,18 @@ pub fn flatten_session_tree(roots: &[SessionTreeNode]) -> Vec<FlatSessionNode> {
     flattened
 }
 
+pub fn is_current_session_path(
+    path: impl AsRef<Path>,
+    current_session_path: Option<impl AsRef<Path>>,
+) -> bool {
+    let Some(current_session_path) = current_session_path else {
+        return false;
+    };
+
+    canonical_session_path(&path.as_ref().to_string_lossy())
+        == canonical_session_path(&current_session_path.as_ref().to_string_lossy())
+}
+
 fn flatten_node(
     node: &SessionTreeNode,
     depth: usize,
@@ -268,7 +280,9 @@ fn canonical_session_path(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_session_tree, flatten_session_tree, SessionSelectorState};
+    use super::{
+        build_session_tree, flatten_session_tree, is_current_session_path, SessionSelectorState,
+    };
     use crate::session_manager::SessionInfo;
     use crate::session_selector_search::{SessionNameFilter, SessionSortMode};
 
@@ -493,6 +507,31 @@ mod tests {
         assert_eq!(state.selected_index(), 0);
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn current_session_path_matches_across_symlink_aliases_like_pi() {
+        let dir = temp_dir("session-selector-current-alias");
+        let shared = dir.join("shared");
+        let alias_a = dir.join("alias-a");
+        let alias_b = dir.join("alias-b");
+        std::fs::create_dir_all(&shared).expect("shared dir should be created");
+        std::os::unix::fs::symlink(&shared, &alias_a).expect("alias a should be created");
+        std::os::unix::fs::symlink(&shared, &alias_b).expect("alias b should be created");
+        let session_a = alias_a.join("session.jsonl");
+        let session_b = alias_b.join("session.jsonl");
+        std::fs::write(&session_a, "{}\n").expect("session should be written");
+
+        assert!(is_current_session_path(&session_b, Some(&session_a)));
+        assert!(!is_current_session_path(
+            &session_b,
+            None::<&std::path::Path>
+        ));
+        assert!(!is_current_session_path(
+            dir.join("other.jsonl"),
+            Some(&session_a)
+        ));
+    }
+
     fn session(id: &str, path: &str, parent: Option<&str>, modified_millis: u128) -> SessionInfo {
         SessionInfo {
             path: path.to_string(),
@@ -524,5 +563,15 @@ mod tests {
         let mut session = session(id, &format!("/sessions/{id}.jsonl"), None, modified_millis);
         session.name = name.map(str::to_string);
         session
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("pm-agent-{label}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+        dir
     }
 }

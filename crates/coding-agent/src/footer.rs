@@ -1,6 +1,7 @@
 use ai::{Model, ModelThinkingLevel, Usage};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use tui::{truncate_to_width, visible_width};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContextUsage {
@@ -123,14 +124,14 @@ pub fn render_footer(state: &FooterRenderState, width: usize) -> Vec<String> {
     stats_parts.push(context_display);
 
     let mut stats_left = stats_parts.join(" ");
-    if visual_width(&stats_left) > width {
-        stats_left = truncate_to_width(&stats_left, width, "...");
+    if visible_width(&stats_left) > width {
+        stats_left = truncate_to_width(&stats_left, width, "...", false);
     }
 
-    let right_side = footer_right_side(state, width, visual_width(&stats_left));
+    let right_side = footer_right_side(state, width, visible_width(&stats_left));
     let stats_line = align_footer_line(&stats_left, &right_side, width);
 
-    let mut lines = vec![truncate_to_width(&pwd, width, "..."), stats_line];
+    let mut lines = vec![truncate_to_width(&pwd, width, "...", false), stats_line];
 
     if !state.extension_statuses.is_empty() {
         let status_line = state
@@ -139,7 +140,7 @@ pub fn render_footer(state: &FooterRenderState, width: usize) -> Vec<String> {
             .map(|text| sanitize_status_text(text))
             .collect::<Vec<_>>()
             .join(" ");
-        lines.push(truncate_to_width(&status_line, width, "..."));
+        lines.push(truncate_to_width(&status_line, width, "...", false));
     }
 
     lines
@@ -187,7 +188,7 @@ fn footer_right_side(state: &FooterRenderState, width: usize, stats_left_width: 
     if state.available_provider_count > 1 {
         if let Some(model) = &state.model {
             let with_provider = format!("({}) {right_without_provider}", model.provider);
-            if stats_left_width + 2 + visual_width(&with_provider) <= width {
+            if stats_left_width + 2 + visible_width(&with_provider) <= width {
                 return with_provider;
             }
         }
@@ -197,8 +198,8 @@ fn footer_right_side(state: &FooterRenderState, width: usize, stats_left_width: 
 }
 
 fn align_footer_line(left: &str, right: &str, width: usize) -> String {
-    let left_width = visual_width(left);
-    let right_width = visual_width(right);
+    let left_width = visible_width(left);
+    let right_width = visible_width(right);
     let min_padding = 2;
     if left_width + min_padding + right_width <= width {
         return format!(
@@ -209,8 +210,8 @@ fn align_footer_line(left: &str, right: &str, width: usize) -> String {
 
     let available_for_right = width.saturating_sub(left_width + min_padding);
     if available_for_right > 0 {
-        let truncated_right = truncate_to_width(right, available_for_right, "");
-        let padding = width.saturating_sub(left_width + visual_width(&truncated_right));
+        let truncated_right = truncate_to_width(right, available_for_right, "", false);
+        let padding = width.saturating_sub(left_width + visible_width(&truncated_right));
         format!("{left}{}{truncated_right}", " ".repeat(padding))
     } else {
         left.to_string()
@@ -239,27 +240,6 @@ fn normalize_path(path: &Path) -> PathBuf {
     path.components().collect()
 }
 
-fn truncate_to_width(text: &str, width: usize, ellipsis: &str) -> String {
-    if visual_width(text) <= width {
-        return text.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let ellipsis_width = visual_width(ellipsis);
-    if ellipsis_width >= width {
-        return ellipsis.chars().take(width).collect();
-    }
-    let keep = width - ellipsis_width;
-    let mut result = text.chars().take(keep).collect::<String>();
-    result.push_str(ellipsis);
-    result
-}
-
-fn visual_width(text: &str) -> usize {
-    text.chars().count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +262,20 @@ mod tests {
                 Some(PathBuf::from("/Users/demo"))
             ),
             "/tmp/project"
+        );
+        assert_eq!(
+            format_cwd_for_footer(
+                PathBuf::from("/home/user2"),
+                Some(PathBuf::from("/home/user"))
+            ),
+            "/home/user2"
+        );
+        assert_eq!(
+            format_cwd_for_footer(
+                PathBuf::from("/home/user"),
+                Some(PathBuf::from("/home/user"))
+            ),
+            "~"
         );
     }
 
@@ -361,5 +355,80 @@ mod tests {
         assert!(lines[1].starts_with("?/4.1k"));
         assert!(lines[1].ends_with("no-model"));
         assert_eq!(lines[2], "alpha ok zeta ready");
+    }
+
+    #[test]
+    fn footer_keeps_wide_session_name_lines_within_width_like_pi() {
+        let state = FooterRenderState {
+            cwd: PathBuf::from("/tmp/project"),
+            home: None,
+            git_branch: Some("main".to_string()),
+            session_name: Some("한글".repeat(30)),
+            usages: Vec::new(),
+            context_usage: Some(ContextUsage {
+                tokens: None,
+                context_window: 200_000,
+                percent: Some(12.3),
+            }),
+            model: Some(Model {
+                id: "test-model".to_string(),
+                provider: "test".to_string(),
+                context_window: 200_000,
+                ..Model::default()
+            }),
+            thinking_level: Some(ModelThinkingLevel::Off),
+            using_subscription: false,
+            available_provider_count: 1,
+            auto_compact_enabled: false,
+            extension_statuses: BTreeMap::new(),
+        };
+
+        let width = 93;
+        let lines = render_footer(&state, width);
+
+        assert!(lines.iter().all(|line| visible_width(line) <= width));
+    }
+
+    #[test]
+    fn footer_keeps_stats_line_with_wide_model_and_provider_within_width_like_pi() {
+        let state = FooterRenderState {
+            cwd: PathBuf::from("/tmp/project"),
+            home: None,
+            git_branch: None,
+            session_name: None,
+            usages: vec![Usage {
+                input: 12_345,
+                output: 6_789,
+                cache_read: 0,
+                cache_write: 0,
+                total_tokens: 0,
+                cost: UsageCost {
+                    total: 1.234,
+                    ..UsageCost::default()
+                },
+            }],
+            context_usage: Some(ContextUsage {
+                tokens: None,
+                context_window: 200_000,
+                percent: Some(12.3),
+            }),
+            model: Some(Model {
+                id: "模".repeat(30),
+                provider: "공급자".to_string(),
+                context_window: 200_000,
+                reasoning: Some(ModelReasoning { enabled: true }),
+                ..Model::default()
+            }),
+            thinking_level: Some(ModelThinkingLevel::High),
+            using_subscription: false,
+            available_provider_count: 2,
+            auto_compact_enabled: false,
+            extension_statuses: BTreeMap::new(),
+        };
+
+        let width = 60;
+        let lines = render_footer(&state, width);
+
+        assert!(lines.iter().all(|line| visible_width(line) <= width));
     }
 }

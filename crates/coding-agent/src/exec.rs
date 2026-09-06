@@ -24,13 +24,16 @@ pub fn exec_command(
     options: Option<ExecOptions>,
 ) -> Result<ExecResult, String> {
     let options = options.unwrap_or_default();
-    let mut child = Command::new(command)
+    let mut process = Command::new(command);
+    process
         .args(args)
         .current_dir(options.cwd.as_deref().unwrap_or(cwd))
         .envs(options.env.iter().map(|(key, value)| (key, value)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure_process_group(&mut process);
+    let mut child = process
         .spawn()
         .map_err(|error| format!("启动命令失败：{error}"))?;
 
@@ -56,7 +59,7 @@ pub fn exec_command(
 
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             killed = true;
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             let output = child
                 .wait_with_output()
                 .map_err(|error| format!("读取超时命令输出失败：{error}"))?;
@@ -69,6 +72,30 @@ pub fn exec_command(
         }
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{pid}")])
+        .status();
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
 }
 
 #[cfg(test)]
@@ -86,5 +113,26 @@ mod tests {
         .expect("command should run");
         assert_eq!(result.stdout, "hello");
         assert_eq!(result.code, 0);
+    }
+
+    #[test]
+    fn timeout_kills_descendant_processes_like_pi() {
+        let result = exec_command(
+            "sh",
+            &[
+                "-lc".to_string(),
+                "printf before; sleep 2; printf after".to_string(),
+            ],
+            ".",
+            Some(ExecOptions {
+                timeout_ms: Some(100),
+                ..ExecOptions::default()
+            }),
+        )
+        .expect("command should return timeout result");
+
+        assert!(result.killed);
+        assert!(result.stdout.contains("before"));
+        assert!(!result.stdout.contains("after"));
     }
 }

@@ -98,6 +98,7 @@ mod tests {
                 .expect("session should fork");
 
         assert_eq!(forked.cwd(), Path::new("/tmp/target-project"));
+        assert_uuidv7_like(forked.session_id());
         assert_eq!(
             forked.storage_metadata().parent_session_path.as_deref(),
             Some(source_file.to_string_lossy().as_ref())
@@ -174,5 +175,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-agent-session-fork-{label}-{nanos}"));
         fs::create_dir_all(&dir).expect("temp dir should be created");
         dir
+    }
+
+    fn assert_uuidv7_like(value: &str) {
+        let parts = value.split('-').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 5, "session id should have UUID shape: {value}");
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+        assert!(parts
+            .iter()
+            .all(|part| part.chars().all(|c| c.is_ascii_hexdigit())));
+        assert!(
+            parts[2].starts_with('7'),
+            "session id should be UUIDv7-like: {value}"
+        );
+        assert!(
+            matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')),
+            "session id should use RFC4122 variant: {value}"
+        );
     }
 }

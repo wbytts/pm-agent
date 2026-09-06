@@ -13,7 +13,8 @@ pub(crate) mod truncate;
 mod write;
 
 pub use registry::{
-    default_tools, execute_tool, plan_tool_activation, NoToolsMode, ToolActivationPlan,
+    default_tools, execute_tool, plan_tool_activation, prepare_tool_request, NoToolsMode,
+    ToolActivationPlan,
 };
 
 #[cfg(test)]

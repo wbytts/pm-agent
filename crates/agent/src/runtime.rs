@@ -149,6 +149,8 @@ impl<P: LanguageModelProvider> Agent<P> {
                         is_error: false,
                         usage: assistant_usage.clone(),
                         stop_reason: Some(ai::AssistantStopReason::Stop),
+                        provider: Some(self.state.model.provider.clone()),
+                        model: Some(self.state.model.id.clone()),
                     };
                     self.state.messages.push(message.clone());
                     events.push(AgentEvent::MessageEnd { message });
@@ -171,6 +173,8 @@ impl<P: LanguageModelProvider> Agent<P> {
                             (message.usage != Default::default()).then_some(message.usage)
                         }),
                         stop_reason: Some(message.stop_reason),
+                        provider: Some(self.state.model.provider.clone()),
+                        model: Some(self.state.model.id.clone()),
                     };
                     self.state.messages.push(message.clone());
                     events.push(AgentEvent::MessageEnd { message });

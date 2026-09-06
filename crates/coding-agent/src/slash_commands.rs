@@ -26,6 +26,12 @@ pub struct BuiltinSlashCommand {
     pub description: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinSlashCommandInfo {
+    pub name: String,
+    pub description: String,
+}
+
 pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
     BuiltinSlashCommand {
         name: "settings",
@@ -113,10 +119,48 @@ pub const BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
     },
 ];
 
+pub fn builtin_slash_commands(app_name: &str) -> Vec<BuiltinSlashCommandInfo> {
+    BUILTIN_SLASH_COMMANDS
+        .iter()
+        .map(|command| BuiltinSlashCommandInfo {
+            name: command.name.to_string(),
+            description: if command.name == "quit" {
+                format!("Quit {app_name}")
+            } else {
+                command.description.to_string()
+            },
+        })
+        .collect()
+}
+
 pub fn builtin_slash_command(name: &str) -> Option<&'static BuiltinSlashCommand> {
     BUILTIN_SLASH_COMMANDS
         .iter()
         .find(|command| command.name == name.trim_start_matches('/'))
+}
+
+pub fn path_command_argument(text: &str, command: &str) -> Option<String> {
+    if text == command {
+        return None;
+    }
+    let prefix = format!("{command} ");
+    if !text.starts_with(&prefix) {
+        return None;
+    }
+
+    let argument = text[command.len() + 1..].trim_start();
+    if argument.is_empty() {
+        return None;
+    }
+    let first = argument.chars().next()?;
+    if first == '"' || first == '\'' {
+        let closing = argument[first.len_utf8()..].find(first)?;
+        let end = first.len_utf8() + closing;
+        return Some(argument[first.len_utf8()..end].to_string());
+    }
+
+    let end = argument.find(char::is_whitespace).unwrap_or(argument.len());
+    Some(argument[..end].to_string())
 }
 
 pub fn prompt_template_commands(templates: &[PromptTemplate]) -> Vec<SlashCommandInfo> {
@@ -211,6 +255,57 @@ mod tests {
         assert!(BUILTIN_SLASH_COMMANDS
             .iter()
             .any(|command| command.name == "compact"));
+    }
+
+    #[test]
+    fn extracts_path_command_arguments_like_pi_interactive_mode() {
+        assert_eq!(
+            path_command_argument(r#"/import "path/to/session.jsonl""#, "/import"),
+            Some("path/to/session.jsonl".to_string())
+        );
+        assert_eq!(
+            path_command_argument(r#"/import "path with spaces/session.jsonl""#, "/import"),
+            Some("path with spaces/session.jsonl".to_string())
+        );
+        assert_eq!(
+            path_command_argument("/import john's/session.jsonl", "/import"),
+            Some("john's/session.jsonl".to_string())
+        );
+        assert_eq!(
+            path_command_argument("/import /tmp/session.jsonl", "/import"),
+            Some("/tmp/session.jsonl".to_string())
+        );
+        assert_eq!(
+            path_command_argument(
+                r#"/import "path with spaces/session.jsonl" trailing"#,
+                "/import"
+            ),
+            Some("path with spaces/session.jsonl".to_string())
+        );
+        assert_eq!(
+            path_command_argument("/import alpha beta", "/import"),
+            Some("alpha".to_string())
+        );
+        assert_eq!(
+            path_command_argument(r#"/import "unterminated"#, "/import"),
+            None
+        );
+        assert_eq!(
+            path_command_argument("/important /tmp/session.jsonl", "/import"),
+            None
+        );
+        assert_eq!(path_command_argument("/exporter out.html", "/export"), None);
+    }
+
+    #[test]
+    fn builds_builtin_quit_description_from_app_name_like_pi() {
+        let commands = builtin_slash_commands("π");
+        let quit = commands
+            .iter()
+            .find(|command| command.name == "quit")
+            .expect("quit command should exist");
+
+        assert_eq!(quit.description, "Quit π");
     }
 
     #[test]

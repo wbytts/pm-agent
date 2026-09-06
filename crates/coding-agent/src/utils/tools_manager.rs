@@ -177,15 +177,30 @@ pub fn ensure_tool_plan(tool: ManagedTool, context: EnsureToolContext<'_>) -> En
         };
     }
 
-    let Some(asset_name) = tool_asset_name(
+    let version = effective_tool_version(
         tool,
         context.version,
         context.platform,
         context.architecture,
-    ) else {
+    );
+    let Some(asset_name) = tool_asset_name(tool, &version, context.platform, context.architecture)
+    else {
         return EnsureToolPlan::UnsupportedPlatform;
     };
     EnsureToolPlan::Download { asset_name }
+}
+
+pub fn effective_tool_version(
+    tool: ManagedTool,
+    version: &str,
+    platform: &str,
+    architecture: &str,
+) -> String {
+    if tool == ManagedTool::Fd && platform == "darwin" && architecture == "x64" {
+        "10.3.0".to_string()
+    } else {
+        version.to_string()
+    }
 }
 
 pub fn tool_asset_name(
@@ -319,6 +334,35 @@ mod tests {
         assert_eq!(
             tool_asset_name(ManagedTool::Fd, "10.3.0", "win32", "x64"),
             Some("fd-v10.3.0-x86_64-pc-windows-msvc.zip".to_string())
+        );
+    }
+
+    #[test]
+    fn pins_fd_darwin_x64_version_like_pi_tools_manager() {
+        assert_eq!(
+            effective_tool_version(ManagedTool::Fd, "11.0.0", "darwin", "x64"),
+            "10.3.0"
+        );
+        assert_eq!(
+            effective_tool_version(ManagedTool::Fd, "11.0.0", "darwin", "arm64"),
+            "11.0.0"
+        );
+
+        assert_eq!(
+            ensure_tool_plan(
+                ManagedTool::Fd,
+                EnsureToolContext {
+                    platform: "darwin",
+                    architecture: "x64",
+                    version: "11.0.0",
+                    local_path: None,
+                    available_system_commands: &[],
+                    offline_value: None,
+                }
+            ),
+            EnsureToolPlan::Download {
+                asset_name: "fd-v10.3.0-x86_64-apple-darwin.tar.gz".to_string()
+            }
         );
     }
 

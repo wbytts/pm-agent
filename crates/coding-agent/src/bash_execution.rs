@@ -2,6 +2,7 @@ use crate::tools::truncate::{
     truncate_tail, TruncationOptions, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES,
 };
 use crate::utils::strip_ansi;
+use tui::wrap_text_with_ansi;
 
 const PREVIEW_LINES: usize = 20;
 
@@ -108,6 +109,24 @@ impl BashExecutionState {
         cancel_key_text: &str,
         expand_key_hint: &str,
     ) -> Vec<BashExecutionLine> {
+        self.render_lines_with_width(cancel_key_text, expand_key_hint, None)
+    }
+
+    pub fn render_lines_for_width(
+        &self,
+        cancel_key_text: &str,
+        expand_key_hint: &str,
+        width: usize,
+    ) -> Vec<BashExecutionLine> {
+        self.render_lines_with_width(cancel_key_text, expand_key_hint, Some(width))
+    }
+
+    fn render_lines_with_width(
+        &self,
+        cancel_key_text: &str,
+        expand_key_hint: &str,
+        width: Option<usize>,
+    ) -> Vec<BashExecutionLine> {
         let full_output = self.output();
         let context_truncation = truncate_tail(
             &full_output,
@@ -134,34 +153,50 @@ impl BashExecutionState {
         };
 
         let mut lines = vec![BashExecutionLine::Command(format!("$ {}", self.command))];
-        lines.extend(display_lines.iter().cloned().map(BashExecutionLine::Output));
+        for line in display_lines {
+            push_rendered_line(&mut lines, BashExecutionLine::Output, line, width);
+        }
 
         if self.status == BashExecutionStatus::Running {
-            lines.push(BashExecutionLine::Status(format!(
-                "Running... ({cancel_key_text} to cancel)"
-            )));
+            push_rendered_line(
+                &mut lines,
+                BashExecutionLine::Status,
+                &format!("Running... ({cancel_key_text} to cancel)"),
+                width,
+            );
             return lines;
         }
 
         if hidden_line_count > 0 {
             if self.expanded {
-                lines.push(BashExecutionLine::Status(format!(
-                    "({expand_key_hint} to collapse)"
-                )));
+                push_rendered_line(
+                    &mut lines,
+                    BashExecutionLine::Status,
+                    &format!("({expand_key_hint} to collapse)"),
+                    width,
+                );
             } else {
-                lines.push(BashExecutionLine::Status(format!(
-                    "... {hidden_line_count} more lines ({expand_key_hint} to expand)"
-                )));
+                push_rendered_line(
+                    &mut lines,
+                    BashExecutionLine::Status,
+                    &format!("... {hidden_line_count} more lines ({expand_key_hint} to expand)"),
+                    width,
+                );
             }
         }
 
         match self.status {
             BashExecutionStatus::Cancelled => {
-                lines.push(BashExecutionLine::Status("(cancelled)".to_string()));
+                push_rendered_line(&mut lines, BashExecutionLine::Status, "(cancelled)", width);
             }
             BashExecutionStatus::Error => {
                 if let Some(exit_code) = self.exit_code {
-                    lines.push(BashExecutionLine::Status(format!("(exit {exit_code})")));
+                    push_rendered_line(
+                        &mut lines,
+                        BashExecutionLine::Status,
+                        &format!("(exit {exit_code})"),
+                        width,
+                    );
                 }
             }
             BashExecutionStatus::Running | BashExecutionStatus::Complete => {}
@@ -169,9 +204,12 @@ impl BashExecutionState {
 
         if self.context_truncated || context_truncation.truncated {
             if let Some(path) = &self.full_output_path {
-                lines.push(BashExecutionLine::Status(format!(
-                    "Output truncated. Full output: {path}"
-                )));
+                push_rendered_line(
+                    &mut lines,
+                    BashExecutionLine::Status,
+                    &format!("Output truncated. Full output: {path}"),
+                    width,
+                );
             }
         }
 
@@ -179,9 +217,28 @@ impl BashExecutionState {
     }
 }
 
+fn push_rendered_line(
+    lines: &mut Vec<BashExecutionLine>,
+    wrap: impl Fn(String) -> BashExecutionLine,
+    text: &str,
+    width: Option<usize>,
+) {
+    let Some(width) = width.filter(|width| *width > 0) else {
+        lines.push(wrap(text.to_string()));
+        return;
+    };
+    let wrapped = wrap_text_with_ansi(text, width);
+    if wrapped.is_empty() {
+        lines.push(wrap(String::new()));
+    } else {
+        lines.extend(wrapped.into_iter().map(wrap));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BashExecutionLine, BashExecutionState, BashExecutionStatus};
+    use tui::visible_width;
 
     #[test]
     fn bash_execution_appends_chunks_strips_ansi_and_normalizes_line_endings() {
@@ -278,5 +335,54 @@ mod tests {
         assert!(running
             .render_lines("esc", "ctrl+o")
             .contains(&BashExecutionLine::Status("(cancelled)".to_string())));
+    }
+
+    #[test]
+    fn bash_execution_collapsed_render_respects_render_time_width_like_pi() {
+        let mut state = BashExecutionState::new("printf long".to_string(), false);
+        let long_line = "x".repeat(150);
+        state.append_output(&format!("{long_line}\n{long_line}\n"));
+        state.set_complete(Some(0), false, false, None);
+
+        let lines = state.render_lines_for_width("esc", "ctrl+o", 60);
+
+        for line in lines {
+            match line {
+                BashExecutionLine::Output(text) | BashExecutionLine::Status(text) => {
+                    assert!(
+                        visible_width(&text) <= 60,
+                        "rendered line exceeds width: {text:?}"
+                    );
+                }
+                BashExecutionLine::Command(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn bash_execution_recomputes_wrapped_lines_for_each_render_width_like_pi() {
+        let mut state = BashExecutionState::new("echo hello".to_string(), false);
+        let long_line = "abcdefghij".repeat(20);
+        state.append_output(&format!("{long_line}\n"));
+        state.set_complete(Some(0), false, false, None);
+
+        let wide = state.render_lines_for_width("esc", "ctrl+o", 200);
+        let narrow = state.render_lines_for_width("esc", "ctrl+o", 60);
+
+        assert!(wide
+            .iter()
+            .all(|line| visible_width(line_text(line)) <= 200));
+        assert!(narrow
+            .iter()
+            .all(|line| visible_width(line_text(line)) <= 60));
+        assert!(narrow.len() > wide.len());
+    }
+
+    fn line_text(line: &BashExecutionLine) -> &str {
+        match line {
+            BashExecutionLine::Command(text)
+            | BashExecutionLine::Output(text)
+            | BashExecutionLine::Status(text) => text,
+        }
     }
 }

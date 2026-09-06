@@ -11,7 +11,7 @@ pub fn format_skills_for_system_prompt(skills: &[Skill]) -> String {
 
     let mut lines = vec![
         "The following skills provide specialized instructions for specific tasks.".to_string(),
-        "Read the full skill file when the task matches its description.".to_string(),
+        "Use the read tool to load a skill's file when the task matches its description.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
@@ -53,9 +53,9 @@ mod tests {
         let prompt = format_skills_for_system_prompt(&[
             Skill {
                 name: "build".to_string(),
-                description: "Use <build>".to_string(),
+                description: "Use <build> & \"test\" 'ship'".to_string(),
                 content: String::new(),
-                file_path: "/tmp/SKILL.md".to_string(),
+                file_path: "/tmp/skills/build & deploy/SKILL.md".to_string(),
                 source_info: None,
                 disable_model_invocation: false,
             },
@@ -69,8 +69,12 @@ mod tests {
             },
         ]);
 
+        assert!(prompt.contains(
+            "Use the read tool to load a skill's file when the task matches its description."
+        ));
         assert!(prompt.contains("<available_skills>"));
-        assert!(prompt.contains("Use &lt;build&gt;"));
+        assert!(prompt.contains("Use &lt;build&gt; &amp; &quot;test&quot; &apos;ship&apos;"));
+        assert!(prompt.contains("/tmp/skills/build &amp; deploy/SKILL.md"));
         assert!(!prompt.contains("hidden"));
     }
 }

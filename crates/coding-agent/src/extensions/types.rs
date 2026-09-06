@@ -1,12 +1,15 @@
 use crate::source_info::SourceInfo;
+use ai::{ModelCost, ModelInputKind, StreamEvent, StreamRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub type ExtensionHandler = Arc<dyn Fn(ExtensionEvent) -> Option<Value> + Send + Sync>;
 pub type CommandHandler = Arc<dyn Fn(ExtensionCommandContext) -> Result<(), String> + Send + Sync>;
 pub type ToolExecutor = Arc<dyn Fn(Value, ExtensionContext) -> Result<Value, String> + Send + Sync>;
+pub type ProviderStreamHandler =
+    Arc<dyn Fn(StreamRequest) -> ai::AiResult<Vec<StreamEvent>> + Send + Sync>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolDefinition {
@@ -53,19 +56,58 @@ pub struct ExtensionFlag {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelConfig {
     pub id: String,
+    pub name: Option<String>,
     pub display_name: Option<String>,
     pub api: Option<String>,
+    pub base_url: Option<String>,
+    pub reasoning: Option<bool>,
+    pub thinking_level_map: Option<BTreeMap<String, Option<String>>>,
+    pub input: Option<Vec<ModelInputKind>>,
+    pub cost: Option<ModelCost>,
+    pub context_window: Option<usize>,
+    pub max_tokens: Option<usize>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub compat: Option<BTreeMap<String, Value>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
+    pub name: Option<String>,
     pub display_name: Option<String>,
-    pub models: Vec<ProviderModelConfig>,
+    pub base_url: Option<String>,
+    pub api_key: Option<String>,
+    pub api: Option<String>,
+    pub headers: Option<BTreeMap<String, String>>,
+    pub auth_header: Option<bool>,
+    pub compat: Option<BTreeMap<String, Value>>,
+    pub models: Option<Vec<ProviderModelConfig>>,
+    #[serde(skip)]
+    pub stream_simple: Option<ProviderStreamHandler>,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("name", &self.name)
+            .field("display_name", &self.display_name)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key)
+            .field("api", &self.api)
+            .field("headers", &self.headers)
+            .field("auth_header", &self.auth_header)
+            .field("compat", &self.compat)
+            .field("models", &self.models)
+            .field(
+                "stream_simple",
+                &self.stream_simple.as_ref().map(|_| "<handler>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,6 +119,12 @@ pub enum ExtensionEventKind {
     BeforeProviderRequest,
     BeforeAgentStart,
     SessionStart,
+    SessionBeforeSwitch,
+    SessionBeforeFork,
+    SessionBeforeCompact,
+    SessionCompact,
+    SessionBeforeTree,
+    SessionTree,
     SessionShutdown,
     TurnStart,
     TurnEnd,
@@ -129,51 +177,127 @@ impl Extension {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingProviderRegistration {
     pub name: String,
     pub config: ProviderConfig,
     pub extension_path: String,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ExtensionRuntime {
-    pub flag_values: BTreeMap<String, Value>,
-    pub pending_provider_registrations: Vec<PendingProviderRegistration>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PendingProviderAction {
+    Register(PendingProviderRegistration),
+    Unregister {
+        name: String,
+        extension_path: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct ExtensionRuntimeState {
+    flag_values: BTreeMap<String, Value>,
+    pending_provider_actions: Vec<PendingProviderAction>,
     stale_message: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionRuntime {
+    state: Arc<Mutex<ExtensionRuntimeState>>,
+}
+
+pub const STALE_EXTENSION_CONTEXT_MESSAGE: &str = "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+
 impl ExtensionRuntime {
     pub fn assert_active(&self) -> Result<(), String> {
-        if let Some(message) = &self.stale_message {
+        let state = self.state.lock().expect("extension runtime lock poisoned");
+        if let Some(message) = &state.stale_message {
             return Err(message.clone());
         }
         Ok(())
     }
 
-    pub fn invalidate(&mut self, message: Option<String>) {
-        self.stale_message = Some(message.unwrap_or_else(|| {
-            "This extension context is stale after session replacement or reload.".to_string()
-        }));
+    pub fn invalidate(&self, message: Option<String>) {
+        let mut state = self.state.lock().expect("extension runtime lock poisoned");
+        state.stale_message =
+            Some(message.unwrap_or_else(|| STALE_EXTENSION_CONTEXT_MESSAGE.to_string()));
     }
 
     pub fn register_provider(
-        &mut self,
+        &self,
         name: impl Into<String>,
         config: ProviderConfig,
         extension_path: impl Into<String>,
     ) {
-        self.pending_provider_registrations
-            .push(PendingProviderRegistration {
-                name: name.into(),
-                config,
-                extension_path: extension_path.into(),
-            });
+        self.state
+            .lock()
+            .expect("extension runtime lock poisoned")
+            .pending_provider_actions
+            .push(PendingProviderAction::Register(
+                PendingProviderRegistration {
+                    name: name.into(),
+                    config,
+                    extension_path: extension_path.into(),
+                },
+            ));
     }
 
-    pub fn unregister_provider(&mut self, name: &str) {
-        self.pending_provider_registrations
-            .retain(|registration| registration.name != name);
+    pub fn unregister_provider(&self, name: &str, extension_path: impl Into<String>) {
+        let mut state = self.state.lock().expect("extension runtime lock poisoned");
+        let original_len = state.pending_provider_actions.len();
+        state
+            .pending_provider_actions
+            .retain(|action| match action {
+                PendingProviderAction::Register(registration) => registration.name != name,
+                PendingProviderAction::Unregister { .. } => true,
+            });
+        if state.pending_provider_actions.len() == original_len {
+            state
+                .pending_provider_actions
+                .push(PendingProviderAction::Unregister {
+                    name: name.to_string(),
+                    extension_path: extension_path.into(),
+                });
+        }
+    }
+
+    pub fn set_flag_value(&self, name: impl Into<String>, value: Value) {
+        self.state
+            .lock()
+            .expect("extension runtime lock poisoned")
+            .flag_values
+            .insert(name.into(), value);
+    }
+
+    pub fn flag_values(&self) -> BTreeMap<String, Value> {
+        self.state
+            .lock()
+            .expect("extension runtime lock poisoned")
+            .flag_values
+            .clone()
+    }
+
+    pub fn pending_provider_registrations_len(&self) -> usize {
+        self.state
+            .lock()
+            .expect("extension runtime lock poisoned")
+            .pending_provider_actions
+            .iter()
+            .filter(|action| matches!(action, PendingProviderAction::Register(_)))
+            .count()
+    }
+
+    pub fn pending_provider_registrations_is_empty(&self) -> bool {
+        self.pending_provider_registrations_len() == 0
+    }
+
+    pub fn take_pending_provider_actions(&self) -> Vec<PendingProviderAction> {
+        std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .expect("extension runtime lock poisoned")
+                .pending_provider_actions,
+        )
     }
 }
 
@@ -199,6 +323,10 @@ pub struct ExtensionApi<'a> {
 impl<'a> ExtensionApi<'a> {
     pub fn new(extension: &'a mut Extension, runtime: &'a mut ExtensionRuntime) -> Self {
         Self { extension, runtime }
+    }
+
+    pub fn runtime(&self) -> ExtensionRuntime {
+        self.runtime.clone()
     }
 
     pub fn on(
@@ -266,7 +394,8 @@ impl<'a> ExtensionApi<'a> {
 
     pub fn unregister_provider(&mut self, name: &str) -> Result<(), String> {
         self.runtime.assert_active()?;
-        self.runtime.unregister_provider(name);
+        self.runtime
+            .unregister_provider(name, self.extension.path.clone());
         Ok(())
     }
 }
@@ -279,4 +408,5 @@ pub trait ExtensionFactory: Send + Sync {
 pub struct LoadExtensionsResult {
     pub extensions: Vec<Extension>,
     pub errors: Vec<ExtensionError>,
+    pub runtime: ExtensionRuntime,
 }

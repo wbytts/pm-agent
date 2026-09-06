@@ -1,8 +1,9 @@
 use std::fs;
 
-use crate::tools::common::{success, truncate_list_output};
+use crate::tools::common::{success, truncate_list_output_with_details};
 use crate::types::{CodingAgentError, CodingAgentResult, CodingToolResult, CodingWorkspace};
 use crate::workspace::resolve_workspace_path;
+use serde_json::{json, Map, Value};
 
 pub fn list_directory(
     workspace: &CodingWorkspace,
@@ -54,5 +55,19 @@ pub fn list_directory(
         ));
     }
 
-    success(truncate_list_output(&output.join("\n"), notices))
+    let list_output = truncate_list_output_with_details(&output.join("\n"), notices);
+    let mut details = Map::new();
+    if reached_limit {
+        details.insert("entryLimitReached".to_string(), Value::from(limit));
+    }
+    if list_output.truncation.truncated {
+        details.insert("truncation".to_string(), json!(list_output.truncation));
+    }
+
+    Ok(CodingToolResult {
+        success: true,
+        output: list_output.output,
+        details: (!details.is_empty()).then_some(Value::Object(details)),
+        content: None,
+    })
 }

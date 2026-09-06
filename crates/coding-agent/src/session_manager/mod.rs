@@ -15,7 +15,7 @@ mod fork;
 
 pub use discovery::{
     find_most_recent_session, list_all_sessions, list_sessions, list_sessions_from_dir,
-    resolve_session_path, ResolvedSession,
+    load_entries_from_file, resolve_session_path, ResolvedSession,
 };
 
 pub const CURRENT_SESSION_VERSION: u64 = 3;
@@ -82,6 +82,12 @@ pub struct SessionManager<S: SessionStorage> {
     persist: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionCreateOptions {
+    pub id: Option<String>,
+    pub parent_session: Option<String>,
+}
+
 impl SessionManager<InMemorySessionStorage> {
     pub fn in_memory(cwd: impl Into<PathBuf>) -> Self {
         let cwd = cwd.into();
@@ -96,10 +102,46 @@ impl SessionManager<InMemorySessionStorage> {
 
     pub fn replace_with_new_session(
         &mut self,
-        _parent_session: Option<String>,
+        parent_session: Option<String>,
     ) -> Result<(), String> {
-        self.storage = InMemorySessionStorage::default();
+        self.replace_with_new_session_with_options(SessionCreateOptions {
+            parent_session,
+            ..SessionCreateOptions::default()
+        })
+    }
+
+    pub fn replace_with_new_session_with_options(
+        &mut self,
+        options: SessionCreateOptions,
+    ) -> Result<(), String> {
+        self.storage = InMemorySessionStorage::new(
+            Vec::new(),
+            Some(agent::harness::SessionMetadata {
+                id: options.id.unwrap_or_else(session_id),
+                created_at: timestamp_string(),
+                cwd: Some(self.cwd.to_string_lossy().to_string()),
+                path: None,
+                parent_session_path: options.parent_session,
+            }),
+        )
+        .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    pub fn create_branched_session(&mut self, leaf_id: &str) -> Result<Option<PathBuf>, String> {
+        let path = branched_path_entries(&self.storage, leaf_id)?;
+        self.storage = InMemorySessionStorage::new(
+            path,
+            Some(agent::harness::SessionMetadata {
+                id: session_id(),
+                created_at: timestamp_string(),
+                cwd: Some(self.cwd.to_string_lossy().to_string()),
+                path: None,
+                parent_session_path: None,
+            }),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(None)
     }
 }
 
@@ -113,17 +155,32 @@ impl SessionManager<JsonlSessionStorage> {
         session_dir: Option<PathBuf>,
         parent_session: Option<String>,
     ) -> Result<Self, String> {
+        Self::create_with_options(
+            cwd,
+            session_dir,
+            SessionCreateOptions {
+                parent_session,
+                ..SessionCreateOptions::default()
+            },
+        )
+    }
+
+    pub fn create_with_options(
+        cwd: impl Into<PathBuf>,
+        session_dir: Option<PathBuf>,
+        options: SessionCreateOptions,
+    ) -> Result<Self, String> {
         let cwd = cwd.into();
         let session_dir = session_dir.unwrap_or_else(|| default_session_dir(&cwd));
         fs::create_dir_all(&session_dir)
             .map_err(|error| format!("创建 session 目录失败：{error}"))?;
-        let session_id = session_id();
+        let session_id = options.id.unwrap_or_else(session_id);
         let session_file = session_dir.join(format!("{}_{}.jsonl", timestamp_string(), session_id));
         let storage = JsonlSessionStorage::create(
             &session_file,
             cwd.to_string_lossy().to_string(),
             session_id,
-            parent_session,
+            options.parent_session,
         )
         .map_err(|error| error.to_string())?;
         Ok(Self {
@@ -139,12 +196,52 @@ impl SessionManager<JsonlSessionStorage> {
         &mut self,
         parent_session: Option<String>,
     ) -> Result<(), String> {
-        *self = Self::create_with_parent(
-            self.cwd.clone(),
-            Some(self.session_dir.clone()),
+        self.replace_with_new_session_with_options(SessionCreateOptions {
             parent_session,
-        )?;
+            ..SessionCreateOptions::default()
+        })
+    }
+
+    pub fn replace_with_new_session_with_options(
+        &mut self,
+        options: SessionCreateOptions,
+    ) -> Result<(), String> {
+        *self =
+            Self::create_with_options(self.cwd.clone(), Some(self.session_dir.clone()), options)?;
         Ok(())
+    }
+
+    pub fn create_branched_session(&mut self, leaf_id: &str) -> Result<Option<PathBuf>, String> {
+        let path = branched_path_entries(&self.storage, leaf_id)?;
+        let has_assistant = path.iter().any(|entry| {
+            matches!(
+                entry,
+                SessionTreeEntry::Message {
+                    message: AgentMessage {
+                        role: ai::MessageRole::Assistant,
+                        ..
+                    },
+                    ..
+                }
+            )
+        });
+        let previous_session_file = self
+            .session_file
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string());
+        let (session_file, new_session_id) = next_session_file(&self.session_dir);
+        let storage = JsonlSessionStorage::create_with_entries(
+            &session_file,
+            self.cwd.to_string_lossy().to_string(),
+            new_session_id,
+            previous_session_file,
+            path,
+            has_assistant,
+        )
+        .map_err(|error| error.to_string())?;
+        self.storage = storage;
+        self.session_file = Some(session_file.clone());
+        Ok(Some(session_file))
     }
 
     pub fn switch_to_session(&mut self, session_path: impl Into<PathBuf>) -> Result<(), String> {
@@ -265,12 +362,31 @@ impl<S: SessionStorage> SessionManager<S> {
         self.storage.entries()
     }
 
+    pub fn entry(&self, id: &str) -> Option<&SessionTreeEntry> {
+        self.storage.entry(id)
+    }
+
+    pub fn leaf_entry(&self) -> Option<&SessionTreeEntry> {
+        self.leaf_id()
+            .ok()
+            .flatten()
+            .and_then(|id| self.storage.entry(&id))
+    }
+
     pub fn branch(&self, from_id: Option<&str>) -> Result<Vec<SessionTreeEntry>, String> {
         let owned_leaf_id = self.leaf_id()?;
         let leaf_id = from_id.or(owned_leaf_id.as_deref());
         self.storage
             .path_to_root(leaf_id)
             .map_err(|error| error.to_string())
+    }
+
+    pub fn collect_branch_summary_entries(
+        &self,
+        old_leaf_id: Option<&str>,
+        target_id: &str,
+    ) -> Result<crate::compaction::CollectEntriesResult, String> {
+        crate::compaction::collect_entries_for_branch_summary(&self.storage, old_leaf_id, target_id)
     }
 
     pub fn build_context(&self) -> Result<SessionContext, String> {
@@ -359,6 +475,86 @@ impl<S: SessionStorage> SessionManager<S> {
             parent_id: self.storage.leaf_id().map_err(|error| error.to_string())?,
             timestamp: timestamp_string(),
             message,
+        };
+        self.storage
+            .append_entry(entry)
+            .map_err(|error| error.to_string())?;
+        Ok(id)
+    }
+
+    pub fn append_thinking_level_change(
+        &mut self,
+        thinking_level: ai::ModelThinkingLevel,
+    ) -> Result<String, String> {
+        let id = self.storage.create_entry_id();
+        let entry = SessionTreeEntry::ThinkingLevelChange {
+            id: id.clone(),
+            parent_id: self.storage.leaf_id().map_err(|error| error.to_string())?,
+            timestamp: timestamp_string(),
+            thinking_level,
+        };
+        self.storage
+            .append_entry(entry)
+            .map_err(|error| error.to_string())?;
+        Ok(id)
+    }
+
+    pub fn append_model_change(
+        &mut self,
+        provider: impl Into<String>,
+        model_id: impl Into<String>,
+    ) -> Result<String, String> {
+        let id = self.storage.create_entry_id();
+        let entry = SessionTreeEntry::ModelChange {
+            id: id.clone(),
+            parent_id: self.storage.leaf_id().map_err(|error| error.to_string())?,
+            timestamp: timestamp_string(),
+            provider: provider.into(),
+            model_id: model_id.into(),
+        };
+        self.storage
+            .append_entry(entry)
+            .map_err(|error| error.to_string())?;
+        Ok(id)
+    }
+
+    pub fn append_compaction(
+        &mut self,
+        summary: impl Into<String>,
+        first_kept_entry_id: impl Into<String>,
+        tokens_before: u64,
+        details: Option<serde_json::Value>,
+        from_hook: bool,
+    ) -> Result<String, String> {
+        let id = self.storage.create_entry_id();
+        let entry = SessionTreeEntry::Compaction {
+            id: id.clone(),
+            parent_id: self.storage.leaf_id().map_err(|error| error.to_string())?,
+            timestamp: timestamp_string(),
+            summary: summary.into(),
+            first_kept_entry_id: first_kept_entry_id.into(),
+            tokens_before,
+            details,
+            from_hook,
+        };
+        self.storage
+            .append_entry(entry)
+            .map_err(|error| error.to_string())?;
+        Ok(id)
+    }
+
+    pub fn append_custom_entry(
+        &mut self,
+        custom_type: impl Into<String>,
+        data: Option<serde_json::Value>,
+    ) -> Result<String, String> {
+        let id = self.storage.create_entry_id();
+        let entry = SessionTreeEntry::Custom {
+            id: id.clone(),
+            parent_id: self.storage.leaf_id().map_err(|error| error.to_string())?,
+            timestamp: timestamp_string(),
+            custom_type: custom_type.into(),
+            data,
         };
         self.storage
             .append_entry(entry)
@@ -493,6 +689,16 @@ impl<S: SessionStorage> SessionManager<S> {
     }
 }
 
+impl<S: SessionStorage> crate::session_cwd::SessionCwdSource for SessionManager<S> {
+    fn cwd(&self) -> &Path {
+        self.cwd()
+    }
+
+    fn session_file(&self) -> Option<&Path> {
+        self.session_file()
+    }
+}
+
 pub fn default_session_dir(cwd: &Path) -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -543,6 +749,65 @@ fn entry_timestamp(entry: &SessionTreeEntry) -> String {
     }
 }
 
+fn branched_path_entries(
+    storage: &impl SessionStorage,
+    leaf_id: &str,
+) -> Result<Vec<SessionTreeEntry>, String> {
+    let path = storage
+        .path_to_root(Some(leaf_id))
+        .map_err(|error| error.to_string())?;
+    if path.is_empty() {
+        return Err(format!("Entry {leaf_id} not found"));
+    }
+
+    // pi 会排除原路径里的 label entry，再基于当前解析后的 label map 重新串接标签。
+    let mut path_without_labels = path
+        .into_iter()
+        .filter(|entry| !matches!(entry, SessionTreeEntry::Label { .. }))
+        .collect::<Vec<_>>();
+    let path_entry_ids = path_without_labels
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect::<Vec<_>>();
+    let mut parent_id = path_without_labels
+        .last()
+        .map(|entry| entry.id().to_string());
+
+    for target_id in path_entry_ids {
+        let Some(label) = storage.label(&target_id) else {
+            continue;
+        };
+        let Some(timestamp) = storage.label_timestamp(&target_id) else {
+            continue;
+        };
+        let id = unique_entry_id(storage, &path_without_labels);
+        path_without_labels.push(SessionTreeEntry::Label {
+            id: id.clone(),
+            parent_id,
+            timestamp,
+            target_id,
+            label: Some(label),
+        });
+        parent_id = Some(id);
+    }
+
+    Ok(path_without_labels)
+}
+
+fn unique_entry_id(storage: &impl SessionStorage, entries: &[SessionTreeEntry]) -> String {
+    let ids = entries
+        .iter()
+        .map(|entry| entry.id().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    for _ in 0..100 {
+        let id = storage.create_entry_id();
+        if !ids.contains(&id) {
+            return id;
+        }
+    }
+    storage.create_entry_id()
+}
+
 pub(super) fn parse_millis(value: &str) -> u128 {
     value.parse::<u128>().unwrap_or(0)
 }
@@ -552,7 +817,12 @@ fn session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let counter = SESSION_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{millis:x}-{counter:04x}")
+    let time_low = ((millis >> 16) & 0xffff_ffff) as u32;
+    let time_mid = (millis & 0xffff) as u16;
+    let random_a = (counter & 0x0fff) as u16;
+    let variant_b = 0x8000 | (((counter >> 12) & 0x3fff) as u16);
+    let node = counter & 0xffff_ffff_ffff;
+    format!("{time_low:08x}-{time_mid:04x}-7{random_a:03x}-{variant_b:04x}-{node:012x}")
 }
 
 fn timestamp_string() -> String {
@@ -560,6 +830,16 @@ fn timestamp_string() -> String {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis())
         .to_string()
+}
+
+fn next_session_file(session_dir: &Path) -> (PathBuf, String) {
+    loop {
+        let id = session_id();
+        let path = session_dir.join(format!("{}_{}.jsonl", timestamp_string(), id));
+        if !path.exists() {
+            return (path, id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -589,6 +869,312 @@ mod tests {
     }
 
     #[test]
+    fn memory_session_manager_appends_state_entries_like_pi_tree_traversal() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "hello".to_string()))
+            .expect("message should append");
+
+        let thinking = manager
+            .append_thinking_level_change(ai::ModelThinkingLevel::High)
+            .expect("thinking change should append");
+        let model = manager
+            .append_model_change("openai", "gpt-4")
+            .expect("model change should append");
+        let compaction = manager
+            .append_compaction("summary", first.clone(), 1000, None, false)
+            .expect("compaction should append");
+        let custom = manager
+            .append_custom_entry("my_data", Some(serde_json::json!({"key": "value"})))
+            .expect("custom entry should append");
+
+        let entries = manager.entries();
+        assert!(matches!(
+            entries.iter().find(|entry| entry.id() == thinking),
+            Some(SessionTreeEntry::ThinkingLevelChange {
+                parent_id,
+                thinking_level,
+                ..
+            }) if parent_id.as_deref() == Some(first.as_str())
+                && *thinking_level == ai::ModelThinkingLevel::High
+        ));
+        assert!(matches!(
+            entries.iter().find(|entry| entry.id() == model),
+            Some(SessionTreeEntry::ModelChange {
+                parent_id,
+                provider,
+                model_id,
+                ..
+            }) if parent_id.as_deref() == Some(thinking.as_str())
+                && provider == "openai"
+                && model_id == "gpt-4"
+        ));
+        assert!(matches!(
+            entries.iter().find(|entry| entry.id() == compaction),
+            Some(SessionTreeEntry::Compaction {
+                parent_id,
+                summary,
+                first_kept_entry_id,
+                tokens_before,
+                ..
+            }) if parent_id.as_deref() == Some(model.as_str())
+                && summary == "summary"
+                && first_kept_entry_id == &first
+                && *tokens_before == 1000
+        ));
+        assert!(matches!(
+            entries.iter().find(|entry| entry.id() == custom),
+            Some(SessionTreeEntry::Custom {
+                parent_id,
+                custom_type,
+                data: Some(data),
+                ..
+            }) if parent_id.as_deref() == Some(compaction.as_str())
+                && custom_type == "my_data"
+                && data["key"] == "value"
+        ));
+
+        let context = manager.build_context().expect("context should build");
+        assert_eq!(context.thinking_level, ai::ModelThinkingLevel::High);
+        assert_eq!(
+            context.model,
+            Some(("openai".to_string(), "gpt-4".to_string()))
+        );
+        assert_eq!(context.messages.len(), 2);
+        assert!(context.messages[0].content.contains("summary"));
+        assert_eq!(context.messages[1].content, "hello");
+    }
+
+    #[test]
+    fn memory_session_manager_exposes_entry_and_leaf_entry_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        assert!(manager.leaf_entry().is_none());
+        assert!(manager.entry("missing").is_none());
+
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "first".to_string()))
+            .expect("first message should append");
+        let second = manager
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "second".to_string(),
+            ))
+            .expect("second message should append");
+
+        assert!(matches!(
+            manager.entry(&first),
+            Some(SessionTreeEntry::Message { message, .. })
+                if message.role == MessageRole::User && message.content == "first"
+        ));
+        assert_eq!(
+            manager.leaf_entry().map(SessionTreeEntry::id),
+            Some(second.as_str())
+        );
+
+        manager
+            .move_to(Some(first.clone()))
+            .expect("leaf should move");
+        assert_eq!(
+            manager.leaf_entry().map(SessionTreeEntry::id),
+            Some(first.as_str())
+        );
+    }
+
+    #[test]
+    fn memory_create_branched_session_replaces_session_with_path_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "1".to_string()))
+            .expect("first message should append");
+        let second = manager
+            .append_message(AgentMessage::new(MessageRole::Assistant, "2".to_string()))
+            .expect("second message should append");
+        let third = manager
+            .append_message(AgentMessage::new(MessageRole::User, "3".to_string()))
+            .expect("third message should append");
+        manager
+            .append_message(AgentMessage::new(MessageRole::Assistant, "4".to_string()))
+            .expect("fourth message should append");
+
+        manager
+            .move_to(Some(second.clone()))
+            .expect("leaf should move to branch point");
+        let branch_user = manager
+            .append_message(AgentMessage::new(MessageRole::User, "branch".to_string()))
+            .expect("branch message should append");
+        let branch_assistant = manager
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "branch answer".to_string(),
+            ))
+            .expect("branch answer should append");
+
+        assert!(manager
+            .create_branched_session(&branch_assistant)
+            .expect("memory branch should replace current session")
+            .is_none());
+
+        let entry_ids = manager
+            .entries()
+            .into_iter()
+            .map(|entry| entry.id().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entry_ids,
+            vec![first, second, branch_user, branch_assistant]
+        );
+        assert!(manager.entry(&third).is_none());
+    }
+
+    #[test]
+    fn memory_create_branched_session_recreates_resolved_labels_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "1".to_string()))
+            .expect("first message should append");
+        let second = manager
+            .append_message(AgentMessage::new(MessageRole::Assistant, "2".to_string()))
+            .expect("second message should append");
+        manager
+            .append_label_change(first.clone(), Some("initial".to_string()))
+            .expect("label should append");
+        manager
+            .append_label_change(first.clone(), Some("renamed".to_string()))
+            .expect("label rename should append");
+
+        manager
+            .create_branched_session(&second)
+            .expect("memory branch should replace current session");
+
+        let entries = manager.entries();
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            entries.last(),
+            Some(SessionTreeEntry::Label {
+                parent_id,
+                target_id,
+                label: Some(label),
+                ..
+            }) if parent_id.as_deref() == Some(second.as_str())
+                && target_id == &first
+                && label == "renamed"
+        ));
+        assert_eq!(manager.tree()[0].label.as_deref(), Some("renamed"));
+    }
+
+    #[test]
+    fn persisted_create_branched_session_writes_immediately_with_assistant_like_pi() {
+        let dir = temp_dir();
+        let mut manager = SessionManager::create("/tmp/project", Some(dir.clone()))
+            .expect("session should create");
+        manager
+            .append_message(AgentMessage::new(
+                MessageRole::User,
+                "first question".to_string(),
+            ))
+            .expect("user message should append");
+        let assistant = manager
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "first answer".to_string(),
+            ))
+            .expect("assistant message should append");
+        manager
+            .append_message(AgentMessage::new(
+                MessageRole::User,
+                "second question".to_string(),
+            ))
+            .expect("second user message should append");
+
+        let branch_file = manager
+            .create_branched_session(&assistant)
+            .expect("persisted branch should create")
+            .expect("persisted branch should return path");
+
+        assert!(branch_file.exists());
+        let content = fs::read_to_string(&branch_file).expect("branch file should read");
+        let records = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid jsonl"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["type"] == "session")
+                .count(),
+            1
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["type"] == "message")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn persisted_create_branched_session_defers_file_without_assistant_like_pi() {
+        let dir = temp_dir();
+        let mut manager = SessionManager::create("/tmp/project", Some(dir.clone()))
+            .expect("session should create");
+        let first = manager
+            .append_message(AgentMessage::new(
+                MessageRole::User,
+                "first question".to_string(),
+            ))
+            .expect("user message should append");
+        manager
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "first answer".to_string(),
+            ))
+            .expect("assistant message should append");
+
+        let branch_file = manager
+            .create_branched_session(&first)
+            .expect("persisted branch should create")
+            .expect("persisted branch should return path");
+
+        assert!(!branch_file.exists());
+        manager
+            .append_custom_entry("preset-state", Some(serde_json::json!({"name": "plan"})))
+            .expect("custom entry should append before assistant");
+        assert!(!branch_file.exists());
+        manager
+            .append_message(AgentMessage::new(
+                MessageRole::Assistant,
+                "new answer".to_string(),
+            ))
+            .expect("assistant message should append");
+
+        assert!(branch_file.exists());
+        let content = fs::read_to_string(&branch_file).expect("branch file should read");
+        let records = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("valid jsonl"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record["type"] == "session")
+                .count(),
+            1
+        );
+        let ids = records
+            .iter()
+            .filter_map(|record| record.get("id").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        let unique_ids = ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique_ids.len(), ids.len());
+    }
+
+    #[test]
     fn session_tree_exposes_label_timestamp_like_pi() {
         let mut manager = SessionManager::in_memory("/tmp/project");
         let first = manager
@@ -602,6 +1188,36 @@ mod tests {
 
         assert_eq!(tree[0].label.as_deref(), Some("start"));
         assert!(tree[0].label_timestamp.is_some());
+    }
+
+    #[test]
+    fn clearing_session_label_removes_resolved_tree_label_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "hello".to_string()))
+            .expect("message should append");
+
+        manager
+            .append_label_change(first.clone(), Some("checkpoint".to_string()))
+            .expect("label should append");
+        manager
+            .append_label_change(first, None)
+            .expect("label clear should append");
+
+        let tree = manager.tree();
+        assert_eq!(tree[0].label, None);
+        assert_eq!(tree[0].label_timestamp, None);
+    }
+
+    #[test]
+    fn labeling_missing_entry_fails_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+
+        let error = manager
+            .append_label_change("non-existent", Some("label".to_string()))
+            .expect_err("missing entry should fail");
+
+        assert_eq!(error, "Entry non-existent not found");
     }
 
     #[test]
@@ -696,6 +1312,89 @@ mod tests {
     }
 
     #[test]
+    fn new_persisted_session_uses_uuidv7_like_id_like_pi() {
+        let dir = temp_dir();
+        let manager =
+            SessionManager::create("/tmp/project", Some(dir)).expect("session should create");
+
+        assert_uuidv7_like(manager.session_id());
+        assert_eq!(manager.storage_metadata().id, manager.session_id());
+    }
+
+    #[test]
+    fn new_persisted_session_uses_custom_id_like_pi() {
+        let dir = temp_dir();
+        let manager = SessionManager::create_with_options(
+            "/tmp/project",
+            Some(dir),
+            SessionCreateOptions {
+                id: Some("my-custom-id".to_string()),
+                parent_session: None,
+            },
+        )
+        .expect("session should create");
+
+        assert_eq!(manager.session_id(), "my-custom-id");
+        assert_eq!(manager.storage_metadata().id, "my-custom-id");
+        assert!(manager
+            .session_file()
+            .expect("session file should exist")
+            .file_name()
+            .expect("session file should have name")
+            .to_string_lossy()
+            .contains("my-custom-id"));
+        let content =
+            fs::read_to_string(manager.session_file().expect("session file should exist"))
+                .expect("session file should read");
+        assert!(content.contains(r#""id":"my-custom-id""#));
+    }
+
+    #[test]
+    fn new_memory_session_uses_custom_id_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+
+        manager
+            .replace_with_new_session_with_options(SessionCreateOptions {
+                id: Some("header-test-id".to_string()),
+                parent_session: None,
+            })
+            .expect("session should replace");
+
+        assert_eq!(manager.session_id(), "header-test-id");
+        assert_eq!(manager.storage_metadata().id, "header-test-id");
+    }
+
+    #[test]
+    fn new_memory_session_without_custom_id_uses_uuidv7_like_id_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+
+        manager
+            .replace_with_new_session(Some("parent.jsonl".to_string()))
+            .expect("session should replace");
+
+        assert_uuidv7_like(manager.session_id());
+        assert_eq!(
+            manager.storage_metadata().parent_session_path.as_deref(),
+            Some("parent.jsonl")
+        );
+    }
+
+    #[test]
+    fn memory_branched_session_uses_new_uuidv7_like_id_like_pi() {
+        let mut manager = SessionManager::in_memory("/tmp/project");
+        let first = manager
+            .append_message(AgentMessage::new(MessageRole::User, "hello".to_string()))
+            .expect("message should append");
+
+        manager
+            .create_branched_session(&first)
+            .expect("session should branch");
+
+        assert_uuidv7_like(manager.session_id());
+        assert_eq!(manager.storage_metadata().id, manager.session_id());
+    }
+
+    #[test]
     fn continue_recent_keeps_requested_cwd_like_pi() {
         let dir = temp_dir();
         let original = SessionManager::create("/tmp/original", Some(dir.clone()))
@@ -777,5 +1476,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-agent-session-manager-test-{millis}"));
         fs::create_dir_all(&dir).expect("temp dir should be created");
         dir
+    }
+
+    fn assert_uuidv7_like(value: &str) {
+        let parts = value.split('-').collect::<Vec<_>>();
+        assert_eq!(parts.len(), 5, "session id should have UUID shape: {value}");
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+        assert!(parts
+            .iter()
+            .all(|part| part.chars().all(|c| c.is_ascii_hexdigit())));
+        assert!(
+            parts[2].starts_with('7'),
+            "session id should be UUIDv7-like: {value}"
+        );
+        assert!(
+            matches!(parts[3].chars().next(), Some('8' | '9' | 'a' | 'b')),
+            "session id should use RFC4122 variant: {value}"
+        );
     }
 }

@@ -113,7 +113,10 @@ pub use proxy::{
     ProxyAssistantMessageEventOutput, ProxyAssistantMessageEventStream, ProxyContext,
     ProxyMessageState, ProxySerializableStreamOptions, ProxyStreamOptions,
 };
-pub use registry::{ApiProviderInfo, ModelRegistry, ProviderRegistry, RegisteredProvider};
+pub use registry::{
+    ApiProviderInfo, DynamicProvider, ModelRegistry, ProviderRegistry, RegisteredDynamicProvider,
+    RegisteredProvider,
+};
 pub use session_resources::{
     cleanup_session_resources, register_session_resource_cleanup, SessionResourceCleanup,
     SessionResourceCleanupGuard,

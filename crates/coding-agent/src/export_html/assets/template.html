@@ -9,17 +9,47 @@
   </style>
 </head>
 <body>
-  <main id="app">
-    <header class="app-header">
-      <div>
-        <h1 id="session-title">Session Export</h1>
-        <p id="session-meta"></p>
-      </div>
-      <div class="header-pill" id="theme-name"></div>
-    </header>
-    <section id="messages" class="messages"></section>
+  <main id="app" class="export-shell">
+    <aside class="sidebar">
+      <div class="sidebar-title">Entries</div>
+      <nav id="sidebar-tree" class="sidebar-tree" aria-label="Session entries"></nav>
+    </aside>
+    <section id="content" class="content">
+      <header class="app-header">
+        <div>
+          <h1 id="session-title">Session Export</h1>
+          <p id="session-meta"></p>
+        </div>
+        <div class="header-actions">
+          <button type="button" class="header-toggle-btn" data-action="toggle-thinking" title="Toggle thinking (T)">Thinking</button>
+          <button type="button" class="header-toggle-btn" data-action="toggle-tools" title="Toggle tools (O)">Tools</button>
+          <button type="button" class="download-json-btn" onclick="downloadSessionJson()" title="Download session as JSONL">JSONL</button>
+          <div class="header-pill" id="theme-name"></div>
+        </div>
+      </header>
+      <section class="entry-filter-bar">
+        <input id="entry-search" class="entry-search" type="search" placeholder="Search entries">
+        <div class="entry-filter-actions">
+          <button type="button" class="filter-btn active" data-filter="all">All</button>
+          <button type="button" class="filter-btn" data-filter="user-only">User</button>
+          <button type="button" class="filter-btn" data-filter="no-tools">No Tools</button>
+          <button type="button" class="filter-btn" data-filter="labeled-only">Labeled</button>
+        </div>
+        <span id="entry-filter-status" class="entry-filter-status"></span>
+      </section>
+      <section id="messages" class="messages"></section>
+    </section>
   </main>
+  <div id="image-modal" class="image-modal" aria-hidden="true">
+    <img id="modal-image" src="" alt="">
+  </div>
   <script id="session-data" type="application/json">{{SESSION_DATA}}</script>
+  <script>
+{{MARKED_JS}}
+  </script>
+  <script>
+{{HIGHLIGHT_JS}}
+  </script>
   <script>
 {{JS}}
   </script>

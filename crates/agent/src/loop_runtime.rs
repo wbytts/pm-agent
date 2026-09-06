@@ -455,6 +455,8 @@ impl<P: LanguageModelProvider> AgentLoop<P> {
                     is_error: result.is_error,
                     usage: None,
                     stop_reason: None,
+                    provider: None,
+                    model: None,
                 };
                 self.messages.push(tool_result.clone());
                 new_messages.push(tool_result.clone());
@@ -795,6 +797,8 @@ impl<P: LanguageModelProvider> AgentLoop<P> {
                         is_error: false,
                         usage,
                         stop_reason: Some(stop_reason),
+                        provider: Some(self.model.provider.clone()),
+                        model: Some(self.model.id.clone()),
                     });
                 }
                 StreamEvent::RichFinished { message } => {
@@ -819,6 +823,8 @@ impl<P: LanguageModelProvider> AgentLoop<P> {
                             (message.usage != Default::default()).then_some(message.usage)
                         }),
                         stop_reason: Some(stop_reason),
+                        provider: Some(self.model.provider.clone()),
+                        model: Some(self.model.id.clone()),
                     });
                 }
                 StreamEvent::Error { message } => {
@@ -833,6 +839,8 @@ impl<P: LanguageModelProvider> AgentLoop<P> {
                         is_error: true,
                         usage,
                         stop_reason: Some(ai::AssistantStopReason::Error),
+                        provider: Some(self.model.provider.clone()),
+                        model: Some(self.model.id.clone()),
                     });
                 }
             }
@@ -1463,6 +1471,8 @@ fn partial_assistant_message(
         is_error: false,
         usage,
         stop_reason: None,
+        provider: None,
+        model: None,
     }
 }
 

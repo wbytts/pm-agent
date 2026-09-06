@@ -64,20 +64,23 @@ pub struct CompactionPreparation {
     pub settings: CompactionSettings,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchSummaryResult {
     pub summary: String,
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionDetails {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionResult {
     pub summary: String,
     pub first_kept_entry_id: String,
@@ -1245,6 +1248,8 @@ mod tests {
             is_error: false,
             usage: None,
             stop_reason: None,
+            provider: None,
+            model: None,
         }
     }
 
@@ -1260,6 +1265,8 @@ mod tests {
             is_error: false,
             usage: Some(usage),
             stop_reason: Some(AssistantStopReason::Stop),
+            provider: None,
+            model: None,
         }
     }
 

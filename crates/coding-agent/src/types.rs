@@ -26,7 +26,7 @@ pub struct CodingTool {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CodingToolRequest {
     ReadFile {
         path: String,
@@ -48,6 +48,7 @@ pub enum CodingToolRequest {
     },
     Bash {
         command: String,
+        timeout: Option<u64>,
     },
     Ls {
         path: Option<String>,
@@ -61,13 +62,15 @@ pub enum CodingToolRequest {
     Grep {
         pattern: String,
         path: Option<String>,
+        glob: Option<String>,
         ignore_case: bool,
         literal: bool,
+        context: Option<usize>,
         limit: Option<usize>,
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodingToolEdit {
     pub search: String,
     pub replace: String,

@@ -118,6 +118,10 @@ impl ClipboardEnvironment {
 }
 
 pub trait ClipboardRunner {
+    fn set_native_text(&mut self, _text: &str) -> bool {
+        false
+    }
+
     fn run_command(&mut self, command: &ClipboardCommand, text: &str) -> bool;
 
     fn emit_osc52(&mut self, sequence: &str) -> bool;
@@ -181,14 +185,21 @@ pub fn copy_to_clipboard_with_runner(
     platform: ClipboardPlatform,
     environment: ClipboardEnvironment,
     remote: bool,
-    runner: &mut impl ClipboardRunner,
+    runner: &mut dyn ClipboardRunner,
 ) -> Result<(), ClipboardError> {
-    let mut copied = false;
+    // pi 优先使用原生剪贴板，但 Linux 跳过 native，避免 Wayland/X11 选择权丢失。
+    let mut copied = if platform != ClipboardPlatform::Linux {
+        runner.set_native_text(text)
+    } else {
+        false
+    };
 
-    for command in clipboard_command_plan(platform, environment) {
-        if runner.run_command(&command, text) {
-            copied = true;
-            break;
+    if !copied {
+        for command in clipboard_command_plan(platform, environment) {
+            if runner.run_command(&command, text) {
+                copied = true;
+                break;
+            }
         }
     }
 
@@ -317,6 +328,11 @@ mod tests {
     }
 
     impl ClipboardRunner for FakeClipboardRunner {
+        fn set_native_text(&mut self, _text: &str) -> bool {
+            self.calls.push("native".to_string());
+            self.command_results.remove(0)
+        }
+
         fn run_command(&mut self, command: &ClipboardCommand, _text: &str) -> bool {
             self.calls.push(format!("command:{}", command.command));
             self.command_results.remove(0)
@@ -402,7 +418,7 @@ mod tests {
     #[test]
     fn copy_with_runner_skips_osc52_when_local_command_succeeds() {
         let mut runner = FakeClipboardRunner {
-            command_results: vec![true],
+            command_results: vec![false, true],
             osc52_result: false,
             calls: Vec::new(),
         };
@@ -416,13 +432,13 @@ mod tests {
         )
         .expect("copy");
 
-        assert_eq!(runner.calls, vec!["command:pbcopy"]);
+        assert_eq!(runner.calls, vec!["native", "command:pbcopy"]);
     }
 
     #[test]
     fn copy_with_runner_emits_osc52_for_remote_even_after_command_success() {
         let mut runner = FakeClipboardRunner {
-            command_results: vec![true],
+            command_results: vec![false, true],
             osc52_result: true,
             calls: Vec::new(),
         };
@@ -438,7 +454,7 @@ mod tests {
 
         assert_eq!(
             runner.calls,
-            vec!["command:pbcopy", "osc52:\x1b]52;c;aGVsbG8=\x07"]
+            vec!["native", "command:pbcopy", "osc52:\x1b]52;c;aGVsbG8=\x07"]
         );
     }
 
@@ -473,9 +489,72 @@ mod tests {
     }
 
     #[test]
+    fn copy_with_runner_uses_native_before_shell_like_pi() {
+        let mut runner = FakeClipboardRunner {
+            command_results: vec![true],
+            osc52_result: false,
+            calls: Vec::new(),
+        };
+
+        copy_to_clipboard_with_runner(
+            "hello",
+            ClipboardPlatform::Macos,
+            ClipboardEnvironment::default(),
+            false,
+            &mut runner,
+        )
+        .expect("copy");
+
+        assert_eq!(runner.calls, vec!["native"]);
+    }
+
+    #[test]
+    fn copy_with_runner_emits_osc52_after_remote_native_success_like_pi() {
+        let mut runner = FakeClipboardRunner {
+            command_results: vec![true],
+            osc52_result: true,
+            calls: Vec::new(),
+        };
+
+        copy_to_clipboard_with_runner(
+            "hello",
+            ClipboardPlatform::Macos,
+            ClipboardEnvironment::default(),
+            true,
+            &mut runner,
+        )
+        .expect("copy");
+
+        assert_eq!(runner.calls, vec!["native", "osc52:\x1b]52;c;aGVsbG8=\x07"]);
+    }
+
+    #[test]
+    fn copy_with_runner_skips_native_on_linux_like_pi() {
+        let mut runner = FakeClipboardRunner {
+            command_results: vec![true],
+            osc52_result: false,
+            calls: Vec::new(),
+        };
+
+        copy_to_clipboard_with_runner(
+            "hello",
+            ClipboardPlatform::Linux,
+            ClipboardEnvironment {
+                x11_display: true,
+                ..ClipboardEnvironment::default()
+            },
+            false,
+            &mut runner,
+        )
+        .expect("copy");
+
+        assert_eq!(runner.calls, vec!["command:xclip -selection clipboard"]);
+    }
+
+    #[test]
     fn copy_with_runner_errors_when_no_command_or_osc52_succeeds() {
         let mut runner = FakeClipboardRunner {
-            command_results: Vec::new(),
+            command_results: vec![false],
             osc52_result: false,
             calls: Vec::new(),
         };

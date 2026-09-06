@@ -18,6 +18,7 @@ export function AgentPanel() {
   const [error, setError] = useState<string | null>(null);
 
   const messages = useMemo(() => session?.messages ?? [], [session]);
+  const deprecationWarnings = session?.deprecationWarnings ?? [];
 
   useEffect(() => {
     void loadModels();
@@ -103,6 +104,13 @@ export function AgentPanel() {
         </div>
       </div>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+        {deprecationWarnings.length > 0 && (
+          <div className="rounded-md border border-[#fde68a] bg-[#fffbeb] px-3 py-2 text-xs leading-5 text-[#92400e]">
+            {deprecationWarnings.map((warning) => (
+              <div key={warning}>{warning}</div>
+            ))}
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="rounded-md border border-dashed border-[#c3cad5] bg-white px-3 py-3 text-xs leading-5 text-[#667085]">
             右侧面板已连接 Rust `pm-agent` 子包，可以在这里和 agent 交互。

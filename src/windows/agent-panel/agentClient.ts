@@ -21,6 +21,7 @@ export interface PmAgentSession {
   messages: AgentMessage[];
   tools: Array<{ name: string; description: string; kind: string }>;
   workspaceCwd: string | null;
+  deprecationWarnings: string[];
   model: AiModel;
 }
 

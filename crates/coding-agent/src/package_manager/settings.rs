@@ -1,7 +1,7 @@
+use super::paths::resolve_package_local_path;
 use super::source::{package_source_base_dir, parse_source, source_identity};
 use super::types::{ParsedSource, SourceScope};
 use crate::settings_manager::{SettingsManager, SettingsStorage};
-use crate::utils::paths::resolve_path;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
@@ -87,7 +87,7 @@ pub fn normalize_package_source_for_settings(
     match parse_source(source) {
         ParsedSource::Local(local) => {
             let base = package_source_base_dir(agent_dir, cwd, scope);
-            let resolved = resolve_path(&local.path, cwd, None);
+            let resolved = resolve_package_local_path(&local.path, cwd);
             relative_path(&base, &resolved)
         }
         _ => source.to_string(),
@@ -120,7 +120,7 @@ fn source_match_key_for_input(cwd: &Path, source: &str) -> String {
     match parse_source(source) {
         ParsedSource::Local(local) => format!(
             "local:{}",
-            display_path(&resolve_path(&local.path, cwd, None))
+            display_path(&resolve_package_local_path(&local.path, cwd))
         ),
         _ => source_identity(source),
     }
@@ -137,7 +137,7 @@ fn source_match_key_for_settings(
             let base = package_source_base_dir(agent_dir, cwd, scope);
             format!(
                 "local:{}",
-                display_path(&resolve_path(&local.path, base, None))
+                display_path(&resolve_package_local_path(&local.path, base))
             )
         }
         _ => source_identity(source),
@@ -307,6 +307,23 @@ mod tests {
             "/work/packages/demo",
             true,
         ));
+        assert_eq!(
+            manager.get_project_packages(),
+            vec![Value::String("../packages/demo".to_string())]
+        );
+    }
+
+    #[test]
+    fn local_sources_trim_input_before_normalizing_like_pi() {
+        let mut manager = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({}));
+        assert!(add_source_to_settings(
+            &mut manager,
+            "/agent",
+            "/work",
+            "  /work/packages/demo  ",
+            true,
+        ));
+
         assert_eq!(
             manager.get_project_packages(),
             vec![Value::String("../packages/demo".to_string())]

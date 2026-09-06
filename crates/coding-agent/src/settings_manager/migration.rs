@@ -70,15 +70,7 @@ pub fn migrate_commands_to_prompts(base_dir: impl AsRef<Path>) -> Result<bool, S
         return Ok(false);
     }
 
-    fs::rename(&commands_dir, &prompts_dir)
-        .map(|_| true)
-        .map_err(|error| {
-            format!(
-                "迁移 commands/ 到 prompts/ 失败：{} -> {}：{error}",
-                commands_dir.display(),
-                prompts_dir.display()
-            )
-        })
+    Ok(fs::rename(&commands_dir, &prompts_dir).is_ok())
 }
 
 pub fn migrate_auth_to_auth_json(agent_dir: impl AsRef<Path>) -> Result<Vec<String>, String> {
@@ -95,46 +87,42 @@ pub fn migrate_auth_to_auth_json(agent_dir: impl AsRef<Path>) -> Result<Vec<Stri
     let mut providers = Vec::new();
 
     if oauth_path.exists() {
-        let oauth = read_json_object(&oauth_path)?;
-        for (provider, credential) in oauth {
-            let mut value = object_from_value(credential);
-            value.insert("type".to_string(), Value::String("oauth".to_string()));
-            migrated.insert(provider.clone(), Value::Object(value));
-            providers.push(provider);
+        if let Ok(oauth) = read_json_object(&oauth_path) {
+            for (provider, credential) in oauth {
+                let mut value = object_from_value(credential);
+                value.insert("type".to_string(), Value::String("oauth".to_string()));
+                migrated.insert(provider.clone(), Value::Object(value));
+                providers.push(provider);
+            }
+            let _ = fs::rename(
+                &oauth_path,
+                oauth_path.with_file_name("oauth.json.migrated"),
+            );
         }
-        fs::rename(
-            &oauth_path,
-            oauth_path.with_file_name("oauth.json.migrated"),
-        )
-        .map_err(|error| {
-            format!(
-                "迁移 oauth.json 到 oauth.json.migrated 失败：{}：{error}",
-                oauth_path.display()
-            )
-        })?;
     }
 
     if settings_path.exists() {
-        let mut settings = read_json_object(&settings_path)?;
-        if let Some(api_keys) = settings.remove("apiKeys") {
-            if let Some(api_keys) = api_keys.as_object() {
-                for (provider, key) in api_keys {
-                    if migrated.contains_key(provider) {
-                        continue;
-                    }
-                    if let Some(key) = key.as_str() {
-                        migrated.insert(
-                            provider.clone(),
-                            serde_json::json!({
-                                "type": "api_key",
-                                "key": key
-                            }),
-                        );
-                        providers.push(provider.clone());
+        if let Ok(mut settings) = read_json_object(&settings_path) {
+            if let Some(api_keys) = settings.remove("apiKeys") {
+                if let Some(api_keys) = api_keys.as_object() {
+                    for (provider, key) in api_keys {
+                        if migrated.contains_key(provider) {
+                            continue;
+                        }
+                        if let Some(key) = key.as_str() {
+                            migrated.insert(
+                                provider.clone(),
+                                serde_json::json!({
+                                    "type": "api_key",
+                                    "key": key
+                                }),
+                            );
+                            providers.push(provider.clone());
+                        }
                     }
                 }
+                let _ = write_json_object(&settings_path, &settings);
             }
-            write_json_object(&settings_path, &settings)?;
         }
     }
 
@@ -166,19 +154,13 @@ pub fn migrate_tools_to_bin(agent_dir: impl AsRef<Path>) -> Result<bool, String>
             .map_err(|error| format!("创建 bin 目录 {} 失败：{error}", bin_dir.display()))?;
         let new_path = bin_dir.join(binary);
         if new_path.exists() {
-            fs::remove_file(&old_path)
-                .map_err(|error| format!("删除旧工具 {} 失败：{error}", old_path.display()))?;
+            let _ = fs::remove_file(&old_path);
             continue;
         }
 
-        fs::rename(&old_path, &new_path).map_err(|error| {
-            format!(
-                "迁移工具到 bin/ 失败：{} -> {}：{error}",
-                old_path.display(),
-                new_path.display()
-            )
-        })?;
-        moved_any = true;
+        if fs::rename(&old_path, &new_path).is_ok() {
+            moved_any = true;
+        }
     }
 
     Ok(moved_any)
@@ -190,10 +172,12 @@ pub fn migrate_keybindings_config_file(path: impl AsRef<Path>) -> Result<bool, S
         return Ok(false);
     }
 
-    let content = fs::read_to_string(path)
-        .map_err(|error| format!("读取 keybindings 文件 {} 失败：{error}", path.display()))?;
-    let value: Value = serde_json::from_str(&content)
-        .map_err(|error| format!("解析 keybindings 文件 {} 失败：{error}", path.display()))?;
+    let Ok(content) = fs::read_to_string(path) else {
+        return Ok(false);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return Ok(false);
+    };
     let Some(object) = value.as_object() else {
         return Ok(false);
     };
@@ -211,9 +195,7 @@ pub fn migrate_keybindings_config_file(path: impl AsRef<Path>) -> Result<bool, S
         "{}\n",
         serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?
     );
-    fs::write(path, content)
-        .map_err(|error| format!("写入 keybindings 文件 {} 失败：{error}", path.display()))?;
-    Ok(true)
+    Ok(fs::write(path, content).is_ok())
 }
 
 pub fn migrate_sessions_from_agent_root(agent_dir: impl AsRef<Path>) -> Result<usize, String> {
@@ -223,17 +205,19 @@ pub fn migrate_sessions_from_agent_root(agent_dir: impl AsRef<Path>) -> Result<u
     }
 
     let mut migrated = 0;
-    let entries = fs::read_dir(agent_dir)
-        .map_err(|error| format!("读取 agent 目录 {} 失败：{error}", agent_dir.display()))?;
+    let Ok(entries) = fs::read_dir(agent_dir) else {
+        return Ok(0);
+    };
     for entry in entries {
-        let entry = entry
-            .map_err(|error| format!("读取 agent 目录项 {} 失败：{error}", agent_dir.display()))?;
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
         if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
             continue;
         }
 
-        let Some(cwd) = session_cwd_from_first_line(&path)? else {
+        let Ok(Some(cwd)) = session_cwd_from_first_line(&path) else {
             continue;
         };
         let Some(file_name) = path.file_name() else {
@@ -245,16 +229,12 @@ pub fn migrate_sessions_from_agent_root(agent_dir: impl AsRef<Path>) -> Result<u
             continue;
         }
 
-        fs::create_dir_all(&target_dir)
-            .map_err(|error| format!("创建 session 目录 {} 失败：{error}", target_dir.display()))?;
-        fs::rename(&path, &target_path).map_err(|error| {
-            format!(
-                "迁移 session 文件失败：{} -> {}：{error}",
-                path.display(),
-                target_path.display()
-            )
-        })?;
-        migrated += 1;
+        if fs::create_dir_all(&target_dir).is_err() {
+            continue;
+        }
+        if fs::rename(&path, &target_path).is_ok() {
+            migrated += 1;
+        }
     }
 
     Ok(migrated)
@@ -275,7 +255,7 @@ pub fn deprecated_extension_dir_warnings(
         ));
     }
 
-    if tools_dir.exists() && tools_dir_has_custom_entries(&tools_dir)? {
+    if tools_dir.exists() && tools_dir_has_custom_entries(&tools_dir).unwrap_or(false) {
         warnings.push(format!(
             "{label} tools/ directory contains custom tools. Custom tools have been merged into extensions."
         ));

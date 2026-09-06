@@ -17,6 +17,7 @@ pub struct PmAgentSession {
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<CodingTool>,
     pub workspace_cwd: Option<String>,
+    pub deprecation_warnings: Vec<String>,
     pub model: Model,
 }
 
@@ -41,6 +42,7 @@ pub fn create_session(id: impl Into<String>, title: impl Into<String>) -> PmAgen
         messages: Vec::new(),
         tools: default_tools(),
         workspace_cwd: None,
+        deprecation_warnings: Vec::new(),
         model: default_model(),
     }
 }
@@ -74,8 +76,10 @@ fn create_session_with_workspace_and_migrations(
     agent_dir: impl AsRef<Path>,
 ) -> Result<PmAgentSession, String> {
     let cwd = cwd.into();
-    run_startup_migrations(agent_dir, &cwd)?;
-    Ok(create_session_with_workspace_unchecked(id, title, cwd))
+    let migration_result = run_startup_migrations(agent_dir, &cwd)?;
+    let mut session = create_session_with_workspace_unchecked(id, title, cwd);
+    session.deprecation_warnings = migration_result.deprecation_warnings;
+    Ok(session)
 }
 
 fn create_session_with_workspace_unchecked(
@@ -89,6 +93,7 @@ fn create_session_with_workspace_unchecked(
         messages: Vec::new(),
         tools: default_tools(),
         workspace_cwd: Some(cwd.into()),
+        deprecation_warnings: Vec::new(),
         model: default_model(),
     }
 }
@@ -140,6 +145,34 @@ mod tests {
         );
         assert!(!commands.exists());
         assert!(project_config.join("prompts").join("draft.md").exists());
+
+        fs::remove_dir_all(workspace).expect("应能清理临时目录");
+    }
+
+    #[test]
+    fn create_session_with_workspace_and_migrations_preserves_deprecation_warnings() {
+        let workspace = temp_workspace("startup-warning");
+        let project_config = workspace.join(CONFIG_DIR_NAME);
+        fs::create_dir_all(project_config.join("tools")).expect("应能创建 legacy tools 目录");
+        fs::write(project_config.join("tools").join("deploy"), "custom")
+            .expect("应能写入自定义工具");
+        let agent_dir = workspace.join("agent");
+
+        let session = create_session_with_workspace_and_migrations(
+            "session",
+            "Session",
+            workspace.to_string_lossy(),
+            &agent_dir,
+        )
+        .expect("启动迁移应成功");
+
+        assert_eq!(
+            session.deprecation_warnings,
+            vec![
+                "Project tools/ directory contains custom tools. Custom tools have been merged into extensions."
+                    .to_string()
+            ]
+        );
 
         fs::remove_dir_all(workspace).expect("应能清理临时目录");
     }

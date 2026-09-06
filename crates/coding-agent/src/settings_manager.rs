@@ -1,4 +1,5 @@
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 
 use crate::http_dispatcher::{parse_http_idle_timeout_ms, DEFAULT_HTTP_IDLE_TIMEOUT_MS};
 use crate::utils::paths::normalize_path;
@@ -26,6 +27,8 @@ pub struct SettingsManager<S: SettingsStorage> {
     project_settings: Value,
     settings: Value,
     errors: Vec<SettingsError>,
+    modified_global_keys: BTreeSet<String>,
+    modified_project_keys: BTreeSet<String>,
 }
 
 impl SettingsManager<InMemorySettingsStorage> {
@@ -50,6 +53,8 @@ impl<S: SettingsStorage> SettingsManager<S> {
             project_settings: Value::Object(Map::new()),
             settings: Value::Object(Map::new()),
             errors: Vec::new(),
+            modified_global_keys: BTreeSet::new(),
+            modified_project_keys: BTreeSet::new(),
         };
         manager.reload();
         manager
@@ -60,6 +65,8 @@ impl<S: SettingsStorage> SettingsManager<S> {
         self.project_settings =
             self.load_scope(SettingsScope::Project, self.project_settings.clone());
         self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+        self.modified_global_keys.clear();
+        self.modified_project_keys.clear();
     }
 
     pub fn global_settings(&self) -> Settings {
@@ -291,6 +298,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
             Some(command) => self.set_global_string_array("npmCommand", command),
             None => {
                 object_mut(&mut self.global_settings).remove("npmCommand");
+                self.modified_global_keys.insert("npmCommand".to_string());
             }
         }
         self.save_scope(SettingsScope::Global);
@@ -608,16 +616,53 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     fn save_scope(&mut self, scope: SettingsScope) {
         self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
-        let value = match scope {
+        let modified_keys = self.modified_keys(scope).clone();
+        let mut value = match self.load_current_scope_for_save(scope) {
+            Some(value) => value,
+            None => return,
+        };
+        let modified_value = match scope {
             SettingsScope::Global => &self.global_settings,
             SettingsScope::Project => &self.project_settings,
         };
-        let content = serde_json::to_string_pretty(value).expect("settings should encode");
+        overlay_modified_settings(&mut value, modified_value, &modified_keys);
+        let content = serde_json::to_string_pretty(&value).expect("settings should encode");
         if let Err(error) = self.storage.write(scope, content) {
             self.errors.push(SettingsError {
                 scope,
                 message: error,
             });
+            return;
+        }
+
+        match scope {
+            SettingsScope::Global => self.global_settings = value,
+            SettingsScope::Project => self.project_settings = value,
+        }
+        self.modified_keys_mut(scope).clear();
+        self.settings = deep_merge_settings(&self.global_settings, &self.project_settings);
+    }
+
+    fn load_current_scope_for_save(&mut self, scope: SettingsScope) -> Option<Value> {
+        match self.storage.read(scope) {
+            Ok(Some(content)) => match serde_json::from_str::<Value>(&content) {
+                Ok(value) => Some(migrate_settings(value)),
+                Err(error) => {
+                    self.errors.push(SettingsError {
+                        scope,
+                        message: error.to_string(),
+                    });
+                    None
+                }
+            },
+            Ok(None) => Some(Value::Object(Map::new())),
+            Err(error) => {
+                self.errors.push(SettingsError {
+                    scope,
+                    message: error,
+                });
+                None
+            }
         }
     }
 
@@ -665,6 +710,7 @@ impl<S: SettingsStorage> SettingsManager<S> {
 
     fn set_global(&mut self, key: &str, value: Value) {
         object_mut(&mut self.global_settings).insert(key.to_string(), value);
+        self.modified_global_keys.insert(key.to_string());
     }
 
     fn set_optional_global_string(&mut self, key: &str, value: Option<String>) {
@@ -672,12 +718,14 @@ impl<S: SettingsStorage> SettingsManager<S> {
             Some(value) => self.set_global(key, Value::String(value)),
             None => {
                 object_mut(&mut self.global_settings).remove(key);
+                self.modified_global_keys.insert(key.to_string());
             }
         }
     }
 
     fn set_project(&mut self, key: &str, value: Value) {
         object_mut(&mut self.project_settings).insert(key.to_string(), value);
+        self.modified_project_keys.insert(key.to_string());
     }
 
     fn set_global_string_array(&mut self, key: &str, values: Vec<String>) {
@@ -700,6 +748,35 @@ impl<S: SettingsStorage> SettingsManager<S> {
             .entry(parent.to_string())
             .or_insert_with(|| Value::Object(Map::new()));
         object_mut(parent_value).insert(key.to_string(), value);
+        self.modified_global_keys.insert(parent.to_string());
+    }
+
+    fn modified_keys(&self, scope: SettingsScope) -> &BTreeSet<String> {
+        match scope {
+            SettingsScope::Global => &self.modified_global_keys,
+            SettingsScope::Project => &self.modified_project_keys,
+        }
+    }
+
+    fn modified_keys_mut(&mut self, scope: SettingsScope) -> &mut BTreeSet<String> {
+        match scope {
+            SettingsScope::Global => &mut self.modified_global_keys,
+            SettingsScope::Project => &mut self.modified_project_keys,
+        }
+    }
+}
+
+fn overlay_modified_settings(current: &mut Value, modified: &Value, keys: &BTreeSet<String>) {
+    let current_object = object_mut(current);
+    for key in keys {
+        match modified.get(key) {
+            Some(value) => {
+                current_object.insert(key.clone(), value.clone());
+            }
+            None => {
+                current_object.remove(key);
+            }
+        }
     }
 }
 
@@ -898,6 +975,20 @@ mod tests {
     }
 
     #[test]
+    fn skips_malformed_auth_inputs_like_pi() {
+        let dir = temp_dir("auth-json-malformed");
+        std::fs::write(dir.join("oauth.json"), "{ invalid json").expect("oauth should be written");
+        std::fs::write(dir.join("settings.json"), "{ invalid json")
+            .expect("settings should be written");
+
+        let providers = migrate_auth_to_auth_json(&dir).expect("auth migration should skip errors");
+
+        assert!(providers.is_empty());
+        assert!(!dir.join("auth.json").exists());
+        assert!(dir.join("oauth.json").exists());
+    }
+
+    #[test]
     fn migrates_managed_tool_binaries_to_bin_like_pi() {
         let dir = temp_dir("tools-to-bin");
         let tools_dir = dir.join("tools");
@@ -990,6 +1081,20 @@ mod tests {
     }
 
     #[test]
+    fn skips_malformed_keybindings_file_like_pi() {
+        let dir = temp_dir("keybindings-malformed");
+        let path = dir.join("keybindings.json");
+        std::fs::write(&path, "{ invalid json").expect("keybindings should be written");
+
+        assert!(!migrate_keybindings_config_file(&path).expect("migration should skip errors"));
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("keybindings should remain"),
+            "{ invalid json"
+        );
+    }
+
+    #[test]
     fn migrates_root_session_jsonl_files_to_encoded_session_dir_like_pi() {
         let dir = temp_dir("root-sessions");
         let session_file = dir.join("session.jsonl");
@@ -1042,6 +1147,32 @@ mod tests {
     }
 
     #[test]
+    fn skips_malformed_root_session_files_like_pi() {
+        let dir = temp_dir("root-sessions-malformed");
+        let malformed = dir.join("bad.jsonl");
+        let valid = dir.join("good.jsonl");
+        std::fs::write(&malformed, "{ invalid json\n").expect("bad session should be written");
+        std::fs::write(
+            &valid,
+            r#"{"type":"session","cwd":"/tmp/project"}"#.to_string() + "\n{}\n",
+        )
+        .expect("good session should be written");
+
+        assert_eq!(
+            migrate_sessions_from_agent_root(&dir).expect("migration should skip bad files"),
+            1
+        );
+
+        assert!(malformed.exists());
+        assert!(!valid.exists());
+        assert!(dir
+            .join("sessions")
+            .join("--tmp-project--")
+            .join("good.jsonl")
+            .exists());
+    }
+
+    #[test]
     fn reports_deprecated_hooks_and_custom_tools_like_pi() {
         let dir = temp_dir("deprecated-extension-dirs");
         std::fs::create_dir_all(dir.join("hooks")).expect("hooks dir should be created");
@@ -1071,6 +1202,16 @@ mod tests {
         for name in ["fd", "rg", "fd.exe", "rg.exe", ".DS_Store"] {
             std::fs::write(dir.join("tools").join(name), "").expect("tool should be written");
         }
+
+        assert!(deprecated_extension_dir_warnings(&dir, "Project")
+            .expect("warnings should collect")
+            .is_empty());
+    }
+
+    #[test]
+    fn ignores_unreadable_tools_dir_for_deprecated_warning_like_pi() {
+        let dir = temp_dir("deprecated-unreadable-tools");
+        std::fs::write(dir.join("tools"), "not a directory").expect("tools file should be written");
 
         assert!(deprecated_extension_dir_warnings(&dir, "Project")
             .expect("warnings should collect")
@@ -1392,6 +1533,35 @@ mod tests {
     }
 
     #[test]
+    fn block_images_setting_matches_pi_settings_manager() {
+        let default_manager = SettingsManager::in_memory(json!({}));
+        assert!(!default_manager.get_block_images());
+
+        let configured_manager = SettingsManager::in_memory(json!({
+            "images": {
+                "blockImages": true
+            }
+        }));
+        assert!(configured_manager.get_block_images());
+
+        let mut toggled_manager = SettingsManager::in_memory(json!({}));
+        assert!(!toggled_manager.get_block_images());
+        toggled_manager.set_block_images(true);
+        assert!(toggled_manager.get_block_images());
+        toggled_manager.set_block_images(false);
+        assert!(!toggled_manager.get_block_images());
+
+        let combined_manager = SettingsManager::in_memory(json!({
+            "images": {
+                "autoResize": true,
+                "blockImages": true
+            }
+        }));
+        assert!(combined_manager.get_image_auto_resize());
+        assert!(combined_manager.get_block_images());
+    }
+
+    #[test]
     fn session_dir_expands_home_like_pi_settings() {
         let manager = SettingsManager::in_memory(json!({
             "sessionDir": "~/sessions"
@@ -1414,6 +1584,129 @@ mod tests {
         manager.set_default_model_and_provider("anthropic".to_string(), "claude".to_string());
         assert_eq!(manager.get_default_provider().as_deref(), Some("anthropic"));
         assert_eq!(manager.get_default_model().as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn global_save_preserves_external_array_edits_when_unrelated_field_changes_like_pi() {
+        let mut storage = InMemorySettingsStorage::new();
+        storage
+            .write(
+                SettingsScope::Global,
+                json!({
+                    "theme": "dark",
+                    "packages": ["npm:pi-mcp-adapter"],
+                    "extensions": ["/old/extension.ts"]
+                })
+                .to_string(),
+            )
+            .expect("global write should work");
+        let mut manager = SettingsManager::from_storage(storage);
+
+        manager
+            .storage
+            .write(
+                SettingsScope::Global,
+                json!({
+                    "theme": "dark",
+                    "packages": [],
+                    "extensions": ["/new/extension.ts"]
+                })
+                .to_string(),
+            )
+            .expect("external global edit should work");
+
+        manager.set_theme("light".to_string());
+
+        let saved: Value = serde_json::from_str(
+            &manager
+                .storage
+                .read(SettingsScope::Global)
+                .expect("global read should work")
+                .expect("global settings should exist"),
+        )
+        .expect("global settings should parse");
+        assert_eq!(saved["theme"], json!("light"));
+        assert_eq!(saved["packages"], json!([]));
+        assert_eq!(saved["extensions"], json!(["/new/extension.ts"]));
+    }
+
+    #[test]
+    fn project_save_preserves_external_unmodified_fields_like_pi() {
+        let mut storage = InMemorySettingsStorage::new();
+        storage
+            .write(
+                SettingsScope::Project,
+                json!({
+                    "extensions": ["./old-extension.ts"],
+                    "prompts": ["./old-prompt.md"]
+                })
+                .to_string(),
+            )
+            .expect("project write should work");
+        let mut manager = SettingsManager::from_storage(storage);
+
+        manager
+            .storage
+            .write(
+                SettingsScope::Project,
+                json!({
+                    "extensions": ["./old-extension.ts"],
+                    "prompts": ["./new-prompt.md"]
+                })
+                .to_string(),
+            )
+            .expect("external project edit should work");
+
+        manager.set_project_extension_paths(vec!["./updated-extension.ts".to_string()]);
+
+        let saved: Value = serde_json::from_str(
+            &manager
+                .storage
+                .read(SettingsScope::Project)
+                .expect("project read should work")
+                .expect("project settings should exist"),
+        )
+        .expect("project settings should parse");
+        assert_eq!(saved["extensions"], json!(["./updated-extension.ts"]));
+        assert_eq!(saved["prompts"], json!(["./new-prompt.md"]));
+    }
+
+    #[test]
+    fn project_save_keeps_in_memory_change_for_same_field_like_pi() {
+        let mut storage = InMemorySettingsStorage::new();
+        storage
+            .write(
+                SettingsScope::Project,
+                json!({
+                    "extensions": ["./initial-extension.ts"]
+                })
+                .to_string(),
+            )
+            .expect("project write should work");
+        let mut manager = SettingsManager::from_storage(storage);
+
+        manager
+            .storage
+            .write(
+                SettingsScope::Project,
+                json!({
+                    "extensions": ["./external-extension.ts"]
+                })
+                .to_string(),
+            )
+            .expect("external project edit should work");
+
+        manager.set_project_extension_paths(vec!["./in-memory-extension.ts".to_string()]);
+
+        let saved: Value = serde_json::from_str(
+            &manager
+                .storage
+                .read(SettingsScope::Project)
+                .expect("project read should work")
+                .expect("project settings should exist"),
+        )
+        .expect("project settings should parse");
+        assert_eq!(saved["extensions"], json!(["./in-memory-extension.ts"]));
     }
 
     #[test]

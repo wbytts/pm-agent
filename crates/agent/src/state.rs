@@ -21,6 +21,10 @@ pub struct AgentMessage {
     pub usage: Option<Usage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<ai::AssistantStopReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl AgentMessage {
@@ -36,6 +40,8 @@ impl AgentMessage {
             is_error: false,
             usage: None,
             stop_reason: None,
+            provider: None,
+            model: None,
         }
     }
 }

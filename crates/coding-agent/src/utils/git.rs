@@ -152,13 +152,32 @@ fn parse_protocol_url(url: &str) -> Option<(String, String)> {
     let (_, rest) = url.split_once("://")?;
     let path_start = rest.find('/')?;
     let authority = &rest[..path_start];
-    let host = authority
+    let host_with_port = authority
         .rsplit_once('@')
         .map(|(_, host)| host)
-        .unwrap_or(authority)
-        .to_string();
+        .unwrap_or(authority);
+    let host = protocol_hostname(host_with_port)?;
     let path = rest[path_start + 1..].to_string();
     Some((host, path))
+}
+
+fn protocol_hostname(authority_host: &str) -> Option<String> {
+    if authority_host.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = authority_host.strip_prefix('[') {
+        let end = rest.find(']')?;
+        return Some(rest[..end].to_string());
+    }
+
+    Some(
+        authority_host
+            .split_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(authority_host)
+            .to_string(),
+    )
 }
 
 fn has_explicit_git_protocol(url: &str) -> bool {
@@ -191,6 +210,23 @@ mod tests {
         assert_eq!(source.path, "user/repo");
         assert_eq!(source.reference.as_deref(), Some("main"));
         assert!(source.pinned);
+    }
+
+    #[test]
+    fn parses_explicit_protocol_urls_with_at_ref_like_pi() {
+        let source = parse_git_url("https://github.com/user/repo@v1.0.0").expect("git source");
+        assert_eq!(source.repo, "https://github.com/user/repo");
+        assert_eq!(source.host, "github.com");
+        assert_eq!(source.path, "user/repo");
+        assert_eq!(source.reference.as_deref(), Some("v1.0.0"));
+        assert!(source.pinned);
+
+        let source = parse_git_url("ssh://git@github.com/user/repo").expect("git source");
+        assert_eq!(source.repo, "ssh://git@github.com/user/repo");
+        assert_eq!(source.host, "github.com");
+        assert_eq!(source.path, "user/repo");
+        assert_eq!(source.reference, None);
+        assert!(!source.pinned);
     }
 
     #[test]
@@ -241,6 +277,14 @@ mod tests {
         assert_eq!(source.path, "user/repo");
         assert_eq!(source.reference, None);
         assert!(!source.pinned);
+    }
+
+    #[test]
+    fn protocol_git_url_host_excludes_port_like_pi_url_hostname() {
+        let source = parse_git_url("ssh://git@localhost:2222/user/repo").expect("git source");
+        assert_eq!(source.repo, "ssh://git@localhost:2222/user/repo");
+        assert_eq!(source.host, "localhost");
+        assert_eq!(source.path, "user/repo");
     }
 
     #[test]

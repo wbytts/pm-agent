@@ -573,6 +573,32 @@ impl JsonlSessionStorage {
         })
     }
 
+    pub fn create_with_entries(
+        file_path: impl Into<PathBuf>,
+        cwd: impl Into<String>,
+        session_id: impl Into<String>,
+        parent_session_path: Option<String>,
+        entries: Vec<SessionTreeEntry>,
+        write_immediately: bool,
+    ) -> SessionResult<Self> {
+        let file_path = file_path.into();
+        let metadata = SessionMetadata {
+            id: session_id.into(),
+            created_at: timestamp_string(),
+            cwd: Some(cwd.into()),
+            path: Some(file_path.to_string_lossy().to_string()),
+            parent_session_path,
+        };
+        if write_immediately {
+            rewrite_jsonl_session(&file_path, &metadata, &entries)?;
+        }
+        Ok(Self {
+            metadata: metadata.clone(),
+            file_path,
+            inner: InMemorySessionStorage::new(entries, Some(metadata))?,
+        })
+    }
+
     pub fn open(file_path: impl Into<PathBuf>) -> SessionResult<Self> {
         let file_path = file_path.into();
         let content = fs::read_to_string(&file_path).map_err(|error| {
@@ -648,6 +674,12 @@ impl SessionStorage for JsonlSessionStorage {
     }
 
     fn append_entry(&mut self, entry: SessionTreeEntry) -> SessionResult<()> {
+        if !self.file_path.exists() {
+            if !is_assistant_message(&entry) {
+                return self.inner.append_entry(entry);
+            }
+            rewrite_jsonl_session(&self.file_path, &self.metadata, &self.inner.entries())?;
+        }
         append_jsonl_entry(&self.file_path, &entry)?;
         self.inner.append_entry(entry)
     }
@@ -960,6 +992,16 @@ pub fn build_session_context(path_entries: &[SessionTreeEntry]) -> SessionResult
             } => {
                 model = Some((provider.clone(), model_id.clone()));
             }
+            SessionTreeEntry::Message { message, .. }
+                if message.role == MessageRole::Assistant
+                    && message.provider.is_some()
+                    && message.model.is_some() =>
+            {
+                model = Some((
+                    message.provider.clone().unwrap_or_default(),
+                    message.model.clone().unwrap_or_default(),
+                ));
+            }
             SessionTreeEntry::Compaction {
                 first_kept_entry_id,
                 ..
@@ -1099,12 +1141,11 @@ fn path_to_root(
         let Some(parent_id) = current.parent_id() else {
             break;
         };
-        current = by_id.get(parent_id).ok_or_else(|| {
-            SessionError::new(
-                SessionErrorCode::InvalidSession,
-                format!("Entry {parent_id} not found"),
-            )
-        })?;
+        let Some(parent) = by_id.get(parent_id) else {
+            // pi 在构造上下文时允许断链 session 保留当前叶子路径，避免损坏的旧记录阻断恢复。
+            break;
+        };
+        current = parent;
     }
     path.reverse();
     Ok(path)
@@ -1177,6 +1218,31 @@ fn write_header(path: &Path, metadata: &SessionMetadata) -> SessionResult<()> {
             format!("Failed to create session {}: {error}", path.display()),
         )
     })
+}
+
+fn rewrite_jsonl_session(
+    path: &Path,
+    metadata: &SessionMetadata,
+    entries: &[SessionTreeEntry],
+) -> SessionResult<()> {
+    write_header(path, metadata)?;
+    for entry in entries {
+        append_jsonl_entry(path, entry)?;
+    }
+    Ok(())
+}
+
+fn is_assistant_message(entry: &SessionTreeEntry) -> bool {
+    matches!(
+        entry,
+        SessionTreeEntry::Message {
+            message: AgentMessage {
+                role: MessageRole::Assistant,
+                ..
+            },
+            ..
+        }
+    )
 }
 
 fn append_jsonl_entry(path: &Path, entry: &SessionTreeEntry) -> SessionResult<()> {
@@ -1464,6 +1530,8 @@ mod tests {
                 is_error: false,
                 usage: None,
                 stop_reason: None,
+                provider: None,
+                model: None,
             })
             .expect("message should append");
         session
@@ -1503,6 +1571,8 @@ mod tests {
                     is_error: false,
                     usage: None,
                     stop_reason: None,
+                    provider: None,
+                    model: None,
                 },
             })
             .expect("entry should append");
@@ -1589,6 +1659,66 @@ mod tests {
         assert_eq!(context.messages.len(), 1);
         assert_eq!(context.messages[0].role, MessageRole::User);
         assert_eq!(context.messages[0].content, "hidden context");
+    }
+
+    #[test]
+    fn build_context_from_orphan_leaf_keeps_only_orphan_like_pi() {
+        let orphan = SessionTreeEntry::Message {
+            id: "orphan".to_string(),
+            parent_id: Some("missing".to_string()),
+            timestamp: "2".to_string(),
+            message: AgentMessage::new(MessageRole::Assistant, "orphan"),
+        };
+        let storage = InMemorySessionStorage::new(vec![orphan], None)
+            .expect("orphan storage should load like pi");
+        let session = Session::new(storage);
+
+        let context = session.build_context().expect("context should build");
+
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(context.messages[0].content, "orphan");
+    }
+
+    #[test]
+    fn build_context_uses_assistant_message_model_metadata_like_pi() {
+        let storage = InMemorySessionStorage::new(
+            vec![
+                SessionTreeEntry::Message {
+                    id: "user".to_string(),
+                    parent_id: None,
+                    timestamp: "1".to_string(),
+                    message: AgentMessage::new(MessageRole::User, "hello"),
+                },
+                SessionTreeEntry::ModelChange {
+                    id: "model-change".to_string(),
+                    parent_id: Some("user".to_string()),
+                    timestamp: "2".to_string(),
+                    provider: "openai".to_string(),
+                    model_id: "gpt-4".to_string(),
+                },
+                SessionTreeEntry::Message {
+                    id: "assistant".to_string(),
+                    parent_id: Some("model-change".to_string()),
+                    timestamp: "3".to_string(),
+                    message: {
+                        let mut message = AgentMessage::new(MessageRole::Assistant, "hi");
+                        message.provider = Some("anthropic".to_string());
+                        message.model = Some("claude-test".to_string());
+                        message
+                    },
+                },
+            ],
+            None,
+        )
+        .expect("storage should load");
+        let session = Session::new(storage);
+
+        let context = session.build_context().expect("context should build");
+
+        assert_eq!(
+            context.model,
+            Some(("anthropic".to_string(), "claude-test".to_string()))
+        );
     }
 
     #[test]

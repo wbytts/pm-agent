@@ -70,9 +70,7 @@ pub fn get_latest_pi_release(
     current_version: &str,
     options: Option<VersionCheckOptions>,
 ) -> Result<Option<LatestPiRelease>, reqwest::Error> {
-    if std::env::var_os("PI_SKIP_VERSION_CHECK").is_some()
-        || std::env::var_os("PI_OFFLINE").is_some()
-    {
+    if should_skip_version_check_from_env() {
         return Ok(None);
     }
 
@@ -105,7 +103,18 @@ pub fn check_for_new_pi_version(current_version: &str) -> Option<LatestPiRelease
     get_latest_pi_release(current_version, None)
         .ok()
         .flatten()
-        .filter(|release| is_newer_package_version(&release.version, current_version))
+        .and_then(|release| newer_release_only(release, current_version))
+}
+
+pub fn should_skip_version_check_from_env() -> bool {
+    std::env::var_os("PI_SKIP_VERSION_CHECK").is_some() || std::env::var_os("PI_OFFLINE").is_some()
+}
+
+pub fn newer_release_only(
+    release: LatestPiRelease,
+    current_version: &str,
+) -> Option<LatestPiRelease> {
+    is_newer_package_version(&release.version, current_version).then_some(release)
 }
 
 fn parse_package_version(version: &str) -> Option<ParsedVersion> {
@@ -226,5 +235,41 @@ mod tests {
         assert_eq!(release.version, "1.2.3");
         assert_eq!(release.package_name.as_deref(), Some("@scope/pi"));
         assert_eq!(release.note, None);
+    }
+
+    #[test]
+    fn normalizes_latest_release_note_and_package_name_like_pi_version_check() {
+        let release = normalize_latest_release_response(LatestPiReleaseResponse {
+            version: Some(" 1.2.4 ".to_string()),
+            package_name: Some(" @new-scope/pi ".to_string()),
+            note: Some(" **Read this** ".to_string()),
+        })
+        .expect("release should normalize");
+
+        assert_eq!(
+            release,
+            LatestPiRelease {
+                package_name: Some("@new-scope/pi".to_string()),
+                version: "1.2.4".to_string(),
+                note: Some("**Read this**".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn filters_latest_release_to_newer_versions_like_pi_check_for_new_version() {
+        let current = LatestPiRelease {
+            package_name: None,
+            version: "1.2.3".to_string(),
+            note: None,
+        };
+        assert_eq!(newer_release_only(current, "1.2.3"), None);
+
+        let newer = LatestPiRelease {
+            package_name: None,
+            version: "1.2.4".to_string(),
+            note: None,
+        };
+        assert_eq!(newer_release_only(newer.clone(), "1.2.3"), Some(newer));
     }
 }

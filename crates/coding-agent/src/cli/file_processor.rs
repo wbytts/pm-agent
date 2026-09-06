@@ -6,7 +6,7 @@ use crate::utils::base64::encode_base64;
 use crate::utils::image_dimensions::format_resized_image_dimension_note;
 use crate::utils::image_resize::resize_image;
 use crate::utils::mime::detect_supported_image_mime_type_from_file;
-use crate::utils::paths::{resolve_path, PathInputOptions};
+use crate::utils::paths::{resolve_read_path, PathInputOptions};
 
 #[derive(Debug, Clone, Default)]
 pub struct ProcessFileOptions {
@@ -102,7 +102,7 @@ pub fn process_file_arguments(
 }
 
 fn resolve_file_arg(file_arg: &str, cwd: &Path) -> PathBuf {
-    resolve_path(
+    resolve_read_path(
         file_arg,
         cwd,
         Some(&PathInputOptions {
@@ -224,6 +224,42 @@ mod tests {
         .expect_err("missing file should fail");
 
         assert!(error.contains("File not found"));
+    }
+
+    #[test]
+    fn reads_macos_screenshot_ampm_path_variant_like_pi() {
+        let dir = temp_dir();
+        let actual = "Screenshot 2024-01-01 at 10.00.00\u{202f}AM.txt";
+        fs::write(dir.join(actual), "screen").expect("file should write");
+
+        let processed = process_file_arguments(
+            &["Screenshot 2024-01-01 at 10.00.00 AM.txt".to_string()],
+            ProcessFileOptions {
+                cwd: Some(dir),
+                ..ProcessFileOptions::default()
+            },
+        )
+        .expect("screenshot variant should resolve");
+
+        assert!(processed.text.contains("screen"));
+    }
+
+    #[test]
+    fn reads_macos_curly_quote_path_variant_like_pi() {
+        let dir = temp_dir();
+        let actual = "Capture d\u{2019}ecran.txt";
+        fs::write(dir.join(actual), "capture").expect("file should write");
+
+        let processed = process_file_arguments(
+            &["Capture d'ecran.txt".to_string()],
+            ProcessFileOptions {
+                cwd: Some(dir),
+                ..ProcessFileOptions::default()
+            },
+        )
+        .expect("curly quote variant should resolve");
+
+        assert!(processed.text.contains("capture"));
     }
 
     fn temp_dir() -> PathBuf {

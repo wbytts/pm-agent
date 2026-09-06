@@ -238,11 +238,34 @@ mod tests {
     }
 
     #[test]
+    fn truncate_tail_partially_keeps_oversized_single_line_with_trailing_newline() {
+        let input = format!("{}\n", "X".repeat(300_000));
+        let result = truncate_tail(&input, options(100, 1024));
+
+        assert_eq!(result.content, "X".repeat(1024));
+        assert_eq!(result.output_bytes, 1024);
+        assert_eq!(result.output_lines, 1);
+        assert!(result.last_line_partial);
+        assert_eq!(result.truncated_by, Some(TruncatedBy::Bytes));
+    }
+
+    #[test]
     fn truncate_tail_drops_oversized_character_that_cannot_fit() {
         let result = truncate_tail("abc🙂", options(10, 3));
         assert_eq!(result.content, "");
         assert_eq!(result.output_bytes, 0);
         assert!(result.last_line_partial);
+    }
+
+    #[test]
+    fn truncate_head_counts_trailing_newline_like_pi_harness() {
+        let result = truncate_head("one\n", options(1, 100));
+
+        assert_eq!(result.content, "one");
+        assert!(result.truncated);
+        assert_eq!(result.truncated_by, Some(TruncatedBy::Lines));
+        assert_eq!(result.total_lines, 2);
+        assert_eq!(result.output_lines, 1);
     }
 
     #[test]

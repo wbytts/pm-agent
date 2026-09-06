@@ -1,6 +1,7 @@
 use super::configured::{configured_update_sources, npm_command_from_settings};
 use super::executor::PackageCommandRunner;
 use super::operations::{plan_install, plan_npm_batch_update, plan_remove, progress_verb};
+use super::paths::resolve_package_local_path;
 use super::settings::{add_source_to_settings, remove_source_from_settings};
 use super::source::{managed_npm_install_path, parse_source};
 use super::types::{
@@ -10,7 +11,6 @@ use super::types::{
 use super::update_checker::CommandUpdateChecker;
 use super::updates::{installed_npm_version, plan_update, ConfiguredUpdateSource, UpdateCheck};
 use crate::settings_manager::{SettingsManager, SettingsStorage};
-use crate::utils::paths::resolve_path;
 use std::path::Path;
 use thiserror::Error;
 
@@ -145,73 +145,17 @@ pub fn update_configured_sources<R: PackageCommandRunner>(
     npm_command: Option<NpmCommandConfig>,
     mut on_progress: impl FnMut(ProgressEvent),
 ) -> Result<(), PackageLifecycleError> {
-    let npm_command = npm_command.unwrap_or_default();
-    let mut user_npm_updates = Vec::new();
-    let mut project_npm_updates = Vec::new();
-    let mut git_sources = Vec::new();
-
-    for entry in sources {
-        if entry.scope == SourceScope::Temporary {
-            continue;
-        }
-        match parse_source(&entry.source) {
-            ParsedSource::Npm(npm) => {
-                if npm.pinned {
-                    continue;
-                }
-                let update = NpmUpdateEntry {
-                    source: entry.source.clone(),
-                    spec: format!("{}@latest", npm.name),
-                };
-                match entry.scope {
-                    SourceScope::User => user_npm_updates.push(update),
-                    SourceScope::Project => project_npm_updates.push(update),
-                    SourceScope::Temporary => {}
-                }
-            }
-            ParsedSource::Git(_) => git_sources.push(entry),
-            ParsedSource::Local(_) => {}
-        }
-    }
-
-    if !user_npm_updates.is_empty() {
-        let specs = npm_update_specs(&user_npm_updates);
-        let label = npm_batch_source_label(&user_npm_updates, SourceScope::User);
-        let plan = plan_npm_batch_update(
-            agent_dir.as_ref(),
-            cwd.as_ref(),
-            &specs,
-            SourceScope::User,
-            &npm_command,
-            label,
-        );
-        execute_plan(runner, &plan, &mut on_progress)?;
-    }
-    if !project_npm_updates.is_empty() {
-        let specs = npm_update_specs(&project_npm_updates);
-        let label = npm_batch_source_label(&project_npm_updates, SourceScope::Project);
-        let plan = plan_npm_batch_update(
-            agent_dir.as_ref(),
-            cwd.as_ref(),
-            &specs,
-            SourceScope::Project,
-            &npm_command,
-            label,
-        );
-        execute_plan(runner, &plan, &mut on_progress)?;
-    }
-
-    for entry in git_sources {
-        let plan = plan_update(
-            agent_dir.as_ref(),
-            cwd.as_ref(),
-            &entry.source,
-            entry.scope,
-            Some(npm_command.clone()),
-        );
-        execute_plan(runner, &plan, &mut on_progress)?;
-    }
-    Ok(())
+    let cwd = cwd.as_ref();
+    let checker = CommandUpdateChecker::new(cwd, npm_command.clone());
+    update_configured_sources_with_checker(
+        runner,
+        &checker,
+        agent_dir,
+        cwd,
+        sources,
+        npm_command,
+        &mut on_progress,
+    )
 }
 
 fn update_configured_sources_with_checker<R: PackageCommandRunner, C: UpdateCheck>(
@@ -433,7 +377,7 @@ fn validate_local_install(
     let base = match scope {
         SourceScope::Project | SourceScope::Temporary | SourceScope::User => cwd,
     };
-    let resolved = resolve_path(&local.path, base, None);
+    let resolved = resolve_package_local_path(&local.path, base);
     if resolved.exists() {
         Ok(())
     } else {
@@ -1037,6 +981,43 @@ mod tests {
         assert!(
             runner.calls.borrow().is_empty(),
             "npm install should be skipped when installed version is already latest"
+        );
+    }
+
+    #[test]
+    fn update_configured_sources_skips_unpinned_npm_when_installed_version_matches_latest_like_pi()
+    {
+        let agent_dir = temp_dir();
+        let cwd = temp_dir();
+        let installed_path = agent_dir.join("npm").join("node_modules").join("pkg");
+        fs::create_dir_all(&installed_path).expect("installed package should exist");
+        fs::write(
+            installed_path.join("package.json"),
+            r#"{"version":"1.0.0"}"#,
+        )
+        .expect("package json should write");
+        let npm_command = fake_npm_root_and_view_command(&agent_dir.join("npm"), "1.0.0");
+        let runner = FakeRunner::default();
+
+        update_configured_sources(
+            &runner,
+            &agent_dir,
+            &cwd,
+            &[ConfiguredUpdateSource {
+                source: "npm:pkg".to_string(),
+                scope: SourceScope::User,
+            }],
+            Some(NpmCommandConfig {
+                command: npm_command[0].clone(),
+                args: npm_command[1..].to_vec(),
+            }),
+            |_| {},
+        )
+        .expect("configured update should succeed");
+
+        assert!(
+            runner.calls.borrow().is_empty(),
+            "public configured update should use pi version-check behavior before npm install"
         );
     }
 

@@ -1,6 +1,7 @@
 use super::*;
 use crate::tools::common::collect_temp_workspace;
-use crate::types::{CodingAgentError, CodingToolRequest, CodingWorkspace};
+use crate::types::{CodingAgentError, CodingToolEdit, CodingToolRequest, CodingWorkspace};
+use serde_json::json;
 use std::fs;
 
 #[test]
@@ -70,6 +71,84 @@ fn plans_initial_active_and_allowed_tools_like_pi_sdk() {
 }
 
 #[test]
+fn prepares_legacy_edit_fields_like_pi_prepare_arguments() {
+    let request = prepare_tool_request(
+        "edit",
+        json!({
+            "path": "file.txt",
+            "oldText": "before",
+            "newText": "after"
+        }),
+    )
+    .expect("legacy edit input should prepare");
+
+    assert_eq!(
+        request,
+        CodingToolRequest::EditFileBlocks {
+            path: "file.txt".to_string(),
+            edits: vec![CodingToolEdit {
+                search: "before".to_string(),
+                replace: "after".to_string(),
+            }],
+        }
+    );
+}
+
+#[test]
+fn appends_legacy_edit_fields_to_existing_edits_like_pi_prepare_arguments() {
+    let request = prepare_tool_request(
+        "edit",
+        json!({
+            "path": "file.txt",
+            "edits": [{"oldText": "a", "newText": "b"}],
+            "oldText": "c",
+            "newText": "d"
+        }),
+    )
+    .expect("legacy edit input should prepare");
+
+    assert_eq!(
+        request,
+        CodingToolRequest::EditFileBlocks {
+            path: "file.txt".to_string(),
+            edits: vec![
+                CodingToolEdit {
+                    search: "a".to_string(),
+                    replace: "b".to_string(),
+                },
+                CodingToolEdit {
+                    search: "c".to_string(),
+                    replace: "d".to_string(),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn parses_stringified_edit_blocks_like_pi_prepare_arguments() {
+    let request = prepare_tool_request(
+        "edit",
+        json!({
+            "path": "file.txt",
+            "edits": r#"[{"oldText":"a","newText":"b"}]"#
+        }),
+    )
+    .expect("stringified edits should prepare");
+
+    assert_eq!(
+        request,
+        CodingToolRequest::EditFileBlocks {
+            path: "file.txt".to_string(),
+            edits: vec![CodingToolEdit {
+                search: "a".to_string(),
+                replace: "b".to_string(),
+            }],
+        }
+    );
+}
+
+#[test]
 fn rejects_parent_directory_paths() {
     let workspace = temp_workspace();
     let error = execute_tool(
@@ -122,8 +201,10 @@ fn lists_finds_and_greps_workspace_files() {
         CodingToolRequest::Grep {
             pattern: "println".to_string(),
             path: Some("src".to_string()),
+            glob: None,
             ignore_case: false,
             literal: true,
+            context: None,
             limit: None,
         },
     )
@@ -148,8 +229,10 @@ fn grep_defaults_to_regex_and_literal_keeps_pattern_verbatim_like_pi() {
         CodingToolRequest::Grep {
             pattern: "h.llo".to_string(),
             path: Some("notes.txt".to_string()),
+            glob: None,
             ignore_case: false,
             literal: false,
+            context: None,
             limit: None,
         },
     )
@@ -162,14 +245,127 @@ fn grep_defaults_to_regex_and_literal_keeps_pattern_verbatim_like_pi() {
         CodingToolRequest::Grep {
             pattern: "h.llo".to_string(),
             path: Some("notes.txt".to_string()),
+            glob: None,
             ignore_case: false,
             literal: true,
+            context: None,
             limit: None,
         },
     )
     .expect("literal grep should work");
     assert!(!literal.output.contains("notes.txt:1: hello"));
     assert!(literal.output.contains("notes.txt:2: h.llo"));
+}
+
+#[test]
+fn grep_supports_glob_filter_like_pi() {
+    let workspace = temp_workspace();
+    execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "src/main.rs".to_string(),
+            content: "needle rust".to_string(),
+        },
+    )
+    .expect("rust file should be written");
+    execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "src/main.ts".to_string(),
+            content: "needle typescript".to_string(),
+        },
+    )
+    .expect("typescript file should be written");
+
+    let grep = execute_tool(
+        &workspace,
+        CodingToolRequest::Grep {
+            pattern: "needle".to_string(),
+            path: Some("src".to_string()),
+            glob: Some("*.rs".to_string()),
+            ignore_case: false,
+            literal: true,
+            context: None,
+            limit: None,
+        },
+    )
+    .expect("grep should work");
+
+    assert!(grep.output.contains("main.rs:1: needle rust"));
+    assert!(!grep.output.contains("main.ts"));
+}
+
+#[test]
+fn grep_supports_context_lines_like_pi() {
+    let workspace = temp_workspace();
+    execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "src/main.rs".to_string(),
+            content: "before\nneedle\n after\nneedle again".to_string(),
+        },
+    )
+    .expect("file should be written");
+
+    let grep = execute_tool(
+        &workspace,
+        CodingToolRequest::Grep {
+            pattern: "needle".to_string(),
+            path: Some("src".to_string()),
+            glob: None,
+            ignore_case: false,
+            literal: true,
+            context: Some(1),
+            limit: Some(1),
+        },
+    )
+    .expect("grep should work");
+
+    assert!(grep.output.contains("main.rs-1- before"));
+    assert!(grep.output.contains("main.rs:2: needle"));
+    assert!(grep.output.contains("main.rs-3-  after"));
+    assert!(!grep.output.contains("main.rs:4: needle again"));
+    assert!(grep.output.contains("1 matches limit reached"));
+    let details = grep.details.expect("grep match limit details");
+    assert_eq!(details["matchLimitReached"], 1);
+    assert!(details.get("truncation").is_none());
+}
+
+#[test]
+fn grep_clamps_zero_limit_to_one_like_pi() {
+    let workspace = temp_workspace();
+    execute_tool(
+        &workspace,
+        CodingToolRequest::WriteFile {
+            path: "notes.txt".to_string(),
+            content: "needle one\nneedle two".to_string(),
+        },
+    )
+    .expect("file should be written");
+
+    let grep = execute_tool(
+        &workspace,
+        CodingToolRequest::Grep {
+            pattern: "needle".to_string(),
+            path: Some("notes.txt".to_string()),
+            glob: None,
+            ignore_case: false,
+            literal: true,
+            context: None,
+            limit: Some(0),
+        },
+    )
+    .expect("grep should work");
+
+    assert!(
+        grep.output.contains("notes.txt:1: needle one"),
+        "{}",
+        grep.output
+    );
+    assert!(!grep.output.contains("notes.txt:2: needle two"));
+    assert!(grep.output.contains("1 matches limit reached"));
+    let details = grep.details.expect("grep limit details");
+    assert_eq!(details["matchLimitReached"], 1);
 }
 
 #[test]
@@ -195,6 +391,98 @@ fn find_path_globs_match_nested_paths_like_pi_fd_full_path_mode() {
     .expect("find should work");
 
     assert!(found.output.contains("nested/src/main.rs"));
+}
+
+#[test]
+fn find_outputs_are_sorted_case_insensitively_like_pi_fd() {
+    let workspace = temp_workspace();
+    for path in ["src/zeta.rs", "src/Alpha.rs", "src/beta.rs"] {
+        execute_tool(
+            &workspace,
+            CodingToolRequest::WriteFile {
+                path: path.to_string(),
+                content: String::new(),
+            },
+        )
+        .expect("file should be written");
+    }
+
+    let found = execute_tool(
+        &workspace,
+        CodingToolRequest::Find {
+            pattern: "*.rs".to_string(),
+            path: Some("src".to_string()),
+            limit: None,
+        },
+    )
+    .expect("find should work");
+
+    assert_eq!(found.output, "Alpha.rs\nbeta.rs\nzeta.rs");
+}
+
+#[test]
+fn find_includes_result_limit_details_like_pi() {
+    let workspace = temp_workspace();
+    for path in ["a.txt", "b.txt", "c.txt"] {
+        execute_tool(
+            &workspace,
+            CodingToolRequest::WriteFile {
+                path: path.to_string(),
+                content: String::new(),
+            },
+        )
+        .expect("file should be written");
+    }
+
+    let found = execute_tool(
+        &workspace,
+        CodingToolRequest::Find {
+            pattern: "*.txt".to_string(),
+            path: None,
+            limit: Some(2),
+        },
+    )
+    .expect("find should work");
+
+    assert_eq!(
+        found.output,
+        "a.txt\nb.txt\n\n[2 results limit reached. Use limit=4 for more, or refine pattern]"
+    );
+    let details = found.details.expect("find limit details");
+    assert_eq!(details["resultLimitReached"], 2);
+    assert!(details.get("truncation").is_none());
+}
+
+#[test]
+fn ls_includes_entry_limit_details_like_pi() {
+    let workspace = temp_workspace();
+    for path in ["a.txt", "b.txt", "c.txt"] {
+        execute_tool(
+            &workspace,
+            CodingToolRequest::WriteFile {
+                path: path.to_string(),
+                content: String::new(),
+            },
+        )
+        .expect("file should be written");
+    }
+
+    let listed = execute_tool(
+        &workspace,
+        CodingToolRequest::Ls {
+            path: None,
+            limit: Some(2),
+        },
+    )
+    .expect("ls should work");
+
+    assert_eq!(
+        listed.output,
+        "a.txt\nb.txt\n\n[2 entries limit reached. Use limit=4 for more]"
+    );
+    let details = listed.details.expect("ls limit details");
+    assert_eq!(details["entryLimitReached"], 2);
+    assert!(details.get("truncation").is_none());
 }
 
 #[test]
@@ -445,8 +733,10 @@ fn grep_truncates_long_match_lines_like_pi() {
         CodingToolRequest::Grep {
             pattern: "needle".to_string(),
             path: Some("long.txt".to_string()),
+            glob: None,
             ignore_case: false,
             literal: true,
+            context: None,
             limit: None,
         },
     )
@@ -454,6 +744,9 @@ fn grep_truncates_long_match_lines_like_pi() {
 
     assert!(grep.output.contains("... [truncated]"));
     assert!(grep.output.contains("Some lines truncated to 500 chars"));
+    let details = grep.details.expect("grep line truncation details");
+    assert_eq!(details["linesTruncated"], true);
+    assert!(details.get("truncation").is_none());
 }
 
 #[test]
@@ -480,6 +773,9 @@ fn find_ls_and_grep_report_byte_limits() {
     )
     .expect("ls should work");
     assert!(listed.output.contains("50.0KB limit reached"));
+    let ls_details = listed.details.expect("ls truncation details");
+    assert_eq!(ls_details["truncation"]["truncated"], true);
+    assert_eq!(ls_details["truncation"]["truncatedBy"], "bytes");
 
     let found = execute_tool(
         &workspace,
@@ -491,19 +787,27 @@ fn find_ls_and_grep_report_byte_limits() {
     )
     .expect("find should work");
     assert!(found.output.contains("50.0KB limit reached"));
+    let find_details = found.details.expect("find truncation details");
+    assert_eq!(find_details["truncation"]["truncated"], true);
+    assert_eq!(find_details["truncation"]["truncatedBy"], "bytes");
 
     let grep = execute_tool(
         &workspace,
         CodingToolRequest::Grep {
             pattern: "needle".to_string(),
             path: None,
+            glob: None,
             ignore_case: false,
             literal: true,
+            context: None,
             limit: Some(900),
         },
     )
     .expect("grep should work");
     assert!(grep.output.contains("50.0KB limit reached"));
+    let grep_details = grep.details.expect("grep truncation details");
+    assert_eq!(grep_details["truncation"]["truncated"], true);
+    assert_eq!(grep_details["truncation"]["truncatedBy"], "bytes");
 }
 
 #[test]
@@ -569,8 +873,10 @@ fn find_and_grep_respect_gitignore_rules() {
         CodingToolRequest::Grep {
             pattern: "needle".to_string(),
             path: None,
+            glob: None,
             ignore_case: false,
             literal: true,
+            context: None,
             limit: Some(100),
         },
     )
@@ -730,13 +1036,21 @@ fn bash_truncates_large_output_from_tail() {
         &workspace,
         CodingToolRequest::Bash {
             command: "for i in $(seq 0 2100); do echo line-$i; done".to_string(),
+            timeout: None,
         },
     )
     .expect("bash should run");
 
     assert!(bash.output.contains("line-2100"));
     assert!(!bash.output.contains("line-0"));
-    assert!(bash.output.contains("[Truncated: showing last"));
+    assert!(bash.output.contains("[Showing lines "));
+    assert!(bash.output.contains("Full output:"));
+    let details = bash.details.expect("bash truncation details");
+    assert_eq!(details["truncation"]["truncated"], true);
+    assert_eq!(details["truncation"]["truncatedBy"], "lines");
+    assert!(details["fullOutputPath"]
+        .as_str()
+        .is_some_and(|path| path.contains("pm-agent-bash")));
 }
 
 #[test]
@@ -746,6 +1060,7 @@ fn bash_returns_error_for_non_zero_exit_like_pi() {
         &workspace,
         CodingToolRequest::Bash {
             command: "printf 'out'; printf 'err' >&2; exit 7".to_string(),
+            timeout: None,
         },
     )
     .expect_err("non-zero bash commands should fail");
@@ -754,6 +1069,24 @@ fn bash_returns_error_for_non_zero_exit_like_pi() {
     assert!(message.contains("Command exited with code 7"));
     assert!(message.contains("out"));
     assert!(message.contains("err"));
+}
+
+#[test]
+fn bash_supports_timeout_like_pi() {
+    let workspace = temp_workspace();
+    let error = execute_tool(
+        &workspace,
+        CodingToolRequest::Bash {
+            command: "printf before; sleep 2; printf finished-marker".to_string(),
+            timeout: Some(1),
+        },
+    )
+    .expect_err("timed out bash commands should fail");
+
+    let message = error.to_string();
+    assert!(message.contains("Command timed out after 1 seconds"));
+    assert!(message.contains("before"));
+    assert!(!message.contains("finished-marker"));
 }
 
 fn temp_workspace() -> CodingWorkspace {

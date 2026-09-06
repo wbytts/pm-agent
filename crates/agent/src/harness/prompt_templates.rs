@@ -184,62 +184,87 @@ pub fn parse_command_args(args_string: &str) -> Vec<String> {
 
 pub fn substitute_args(content: &str, args: &[String]) -> String {
     let all_args = args.join(" ");
-    let chars = content.chars().collect::<Vec<_>>();
     let mut output = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] != '$' {
-            output.push(chars[index]);
-            index += 1;
+    let mut indices = content
+        .char_indices()
+        .map(|(index, character)| (index, character))
+        .collect::<Vec<_>>();
+    indices.push((content.len(), '\0'));
+    let mut cursor = 0;
+    let mut char_index = 0;
+    while char_index + 1 < indices.len() {
+        let (byte_index, character) = indices[char_index];
+        if byte_index < cursor {
+            char_index += 1;
             continue;
         }
+        if character != '$' {
+            let next_byte = indices[char_index + 1].0;
+            output.push_str(&content[byte_index..next_byte]);
+            cursor = next_byte;
+            char_index += 1;
+            continue;
+        }
+        let remaining = &content[byte_index..];
 
-        if content[index..].starts_with("$ARGUMENTS") {
+        if remaining.starts_with("$ARGUMENTS") {
             output.push_str(&all_args);
-            index += "$ARGUMENTS".len();
+            cursor = byte_index + "$ARGUMENTS".len();
+            char_index += 1;
             continue;
         }
 
-        if content[index..].starts_with("$@") {
+        if remaining.starts_with("$@") {
             output.push_str(&all_args);
-            index += "$@".len();
+            cursor = byte_index + "$@".len();
+            char_index += 1;
             continue;
         }
 
-        if content[index..].starts_with("${@:") {
-            let after_start = index + "${@:".len();
+        if remaining.starts_with("${@:") {
+            let after_start = byte_index + "${@:".len();
             if let Some(close_offset) = content[after_start..].find('}') {
                 let end = after_start + close_offset;
                 let expression = &content[after_start..end];
                 if let Some(replacement) = slice_args(expression, args) {
                     output.push_str(&replacement);
                 } else {
-                    output.push_str(&content[index..=end]);
+                    output.push_str(&content[byte_index..=end]);
                 }
-                index = end + 1;
+                cursor = end + 1;
+                char_index += 1;
                 continue;
             }
         }
 
-        if chars.get(index + 1).is_some_and(char::is_ascii_digit) {
-            let mut end = index + 1;
-            while chars.get(end).is_some_and(char::is_ascii_digit) {
-                end += 1;
+        if indices
+            .get(char_index + 1)
+            .is_some_and(|(_, character)| character.is_ascii_digit())
+        {
+            let mut digit_end_index = char_index + 1;
+            while indices
+                .get(digit_end_index)
+                .is_some_and(|(_, character)| character.is_ascii_digit())
+            {
+                digit_end_index += 1;
             }
-            let number = chars[index + 1..end]
-                .iter()
-                .collect::<String>()
+            let digit_start_byte = indices[char_index + 1].0;
+            let digit_end_byte = indices[digit_end_index].0;
+            let number = content[digit_start_byte..digit_end_byte]
                 .parse::<usize>()
                 .unwrap_or(0);
             if number > 0 {
                 output.push_str(args.get(number - 1).map_or("", String::as_str));
             }
-            index = end;
+            cursor = digit_end_byte;
+            char_index = digit_end_index;
             continue;
         }
 
-        output.push(chars[index]);
-        index += 1;
+        let next_byte = indices[char_index + 1].0;
+        output.push_str(&content[byte_index..next_byte]);
+        cursor = next_byte;
+        char_index += 1;
     }
     output
 }
@@ -348,6 +373,16 @@ mod tests {
 
         assert_eq!(substitute_args("$ARGUMENTS", &args), "$1 $@ ${@:1}");
         assert_eq!(substitute_args("${@:2}", &args), "$@ ${@:1}");
+    }
+
+    #[test]
+    fn substitutes_arguments_after_unicode_template_text_like_pi() {
+        let args = vec!["値".to_string(), "🎉".to_string()];
+
+        assert_eq!(
+            substitute_args("日本語 $1 café ${@:2} $ARGUMENTS", &args),
+            "日本語 値 café 🎉 値 🎉"
+        );
     }
 
     #[test]

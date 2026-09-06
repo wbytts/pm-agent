@@ -1,5 +1,7 @@
 use ai::{AssistantContentBlock, AssistantStopReason, RichAssistantMessage};
 
+use crate::user_message::add_osc133_zone_markers;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantMessageLine {
     Blank,
@@ -103,6 +105,24 @@ impl AssistantMessageState {
             }
         }
 
+        lines
+    }
+
+    pub fn render_marked_text_lines(&self) -> Vec<String> {
+        let mut lines = self
+            .render_lines()
+            .into_iter()
+            .map(|line| match line {
+                AssistantMessageLine::Blank => String::new(),
+                AssistantMessageLine::Markdown(text)
+                | AssistantMessageLine::Thinking(text)
+                | AssistantMessageLine::HiddenThinking(text)
+                | AssistantMessageLine::Error(text) => text,
+            })
+            .collect::<Vec<_>>();
+        if !self.has_tool_calls() {
+            add_osc133_zone_markers(&mut lines);
+        }
         lines
     }
 
@@ -236,5 +256,48 @@ mod tests {
         let state = AssistantMessageState::new(error_with_tool);
         assert!(state.has_tool_calls());
         assert!(state.render_lines().is_empty());
+    }
+
+    #[test]
+    fn assistant_message_adds_osc133_markers_without_tool_calls_like_pi() {
+        let state =
+            AssistantMessageState::new(assistant_message(vec![AssistantContentBlock::Text(
+                TextContent {
+                    text: "hello".to_string(),
+                    text_signature: None,
+                },
+            )]));
+
+        let lines = state.render_marked_text_lines();
+
+        assert!(!lines.is_empty());
+        assert!(lines[0].starts_with(crate::user_message::OSC133_ZONE_START));
+        assert!(lines.last().is_some_and(|line| line.starts_with(&format!(
+            "{}{}",
+            crate::user_message::OSC133_ZONE_END,
+            crate::user_message::OSC133_ZONE_FINAL
+        ))));
+    }
+
+    #[test]
+    fn assistant_message_skips_osc133_markers_when_tool_calls_exist_like_pi() {
+        let state = AssistantMessageState::new(assistant_message(vec![
+            AssistantContentBlock::Text(TextContent {
+                text: "calling tool".to_string(),
+                text_signature: None,
+            }),
+            AssistantContentBlock::ToolCall(ToolCall {
+                id: "call_1".to_string(),
+                name: "read".to_string(),
+                arguments: BTreeMap::new(),
+                thought_signature: None,
+            }),
+        ]));
+
+        let rendered = state.render_marked_text_lines().join("\n");
+
+        assert!(!rendered.contains(crate::user_message::OSC133_ZONE_START));
+        assert!(!rendered.contains(crate::user_message::OSC133_ZONE_END));
+        assert!(!rendered.contains(crate::user_message::OSC133_ZONE_FINAL));
     }
 }

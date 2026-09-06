@@ -2,17 +2,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use agent::harness::{JsonlSessionStorage, SessionMetadata, SessionStorage, SessionTreeEntry};
+use ai::ToolDefinition;
 use serde::Serialize;
 
 use crate::export_html::template::render_template;
 use crate::export_html::theme::ExportTheme;
 use crate::session_manager::SessionManager;
 
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenderedToolHtml {
+    pub call_html: Option<String>,
+    pub result_html_collapsed: Option<String>,
+    pub result_html_expanded: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
     pub output_path: Option<PathBuf>,
     pub theme_name: Option<String>,
     pub system_prompt: Option<String>,
+    pub tools: Vec<ToolDefinition>,
+    pub rendered_tools: std::collections::BTreeMap<String, RenderedToolHtml>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,6 +33,8 @@ pub struct SessionExport {
     pub entries: Vec<SessionTreeEntry>,
     pub leaf_id: Option<String>,
     pub system_prompt: Option<String>,
+    pub tools: Vec<ToolDefinition>,
+    pub rendered_tools: std::collections::BTreeMap<String, RenderedToolHtml>,
     pub theme: String,
 }
 
@@ -86,6 +99,8 @@ fn session_export<S: SessionStorage>(
         entries: manager.entries(),
         leaf_id: manager.leaf_id()?,
         system_prompt: options.system_prompt.clone(),
+        tools: options.tools.clone(),
+        rendered_tools: options.rendered_tools.clone(),
         theme: theme.name.clone(),
     })
 }
@@ -108,6 +123,7 @@ mod tests {
     use super::*;
     use agent::AgentMessage;
     use ai::MessageRole;
+    use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -130,8 +146,9 @@ mod tests {
         .expect("html should generate");
 
         assert!(html.contains("PM Agent Session Export"));
-        assert!(html.contains("\\u003cworld\\u003e"));
+        assert!(!html.contains("hello <world>"));
         assert!(html.contains("light"));
+        assert!(html.contains("eyJoZWFkZXIi"));
     }
 
     #[test]
@@ -158,7 +175,84 @@ mod tests {
 
         assert_eq!(path, out);
         let html = fs::read_to_string(path).expect("html should exist");
-        assert!(html.contains("saved"));
+        assert!(!html.contains("saved"));
+        assert!(html.contains("eyJoZWFkZXIi"));
+    }
+
+    #[test]
+    fn session_export_includes_available_tools_like_pi() {
+        let manager = SessionManager::in_memory("/tmp/project");
+
+        let export = session_export(
+            &manager,
+            &ExportOptions {
+                tools: vec![ai::ToolDefinition {
+                    name: "read".to_string(),
+                    description: "读取文件".to_string(),
+                    parameters: json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "文件路径"
+                            }
+                        },
+                        "required": ["path"]
+                    }),
+                }],
+                ..ExportOptions::default()
+            },
+            &ExportTheme::resolve(None),
+        )
+        .expect("session export should build");
+
+        assert_eq!(export.tools.len(), 1);
+        assert_eq!(export.tools[0].name, "read");
+        assert_eq!(
+            export.tools[0].parameters["properties"]["path"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn session_export_includes_rendered_tools_like_pi() {
+        let manager = SessionManager::in_memory("/tmp/project");
+        let mut rendered_tools = std::collections::BTreeMap::new();
+        rendered_tools.insert(
+            "call-1".to_string(),
+            RenderedToolHtml {
+                call_html: Some("<span>custom call</span>".to_string()),
+                result_html_collapsed: Some("<span>short</span>".to_string()),
+                result_html_expanded: Some("<div>full</div>".to_string()),
+            },
+        );
+
+        let export = session_export(
+            &manager,
+            &ExportOptions {
+                rendered_tools,
+                ..ExportOptions::default()
+            },
+            &ExportTheme::resolve(None),
+        )
+        .expect("session export should build");
+
+        let rendered = export
+            .rendered_tools
+            .get("call-1")
+            .expect("rendered tool should be exported");
+        assert_eq!(
+            rendered.call_html.as_deref(),
+            Some("<span>custom call</span>")
+        );
+        assert_eq!(
+            rendered.result_html_collapsed.as_deref(),
+            Some("<span>short</span>")
+        );
+        assert_eq!(
+            rendered.result_html_expanded.as_deref(),
+            Some("<div>full</div>")
+        );
     }
 
     fn temp_dir() -> PathBuf {

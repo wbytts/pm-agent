@@ -7,8 +7,17 @@ use crate::session::{PmAgentResponse, PmAgentSession};
 use crate::tool_command::parse_tool_prompt;
 
 pub fn send_prompt(
+    session: PmAgentSession,
+    prompt: impl Into<String>,
+) -> Result<PmAgentResponse, String> {
+    let providers = ProviderRegistry::builtins();
+    send_prompt_with_provider_registry(session, prompt, &providers)
+}
+
+pub fn send_prompt_with_provider_registry(
     mut session: PmAgentSession,
     prompt: impl Into<String>,
+    providers: &ProviderRegistry,
 ) -> Result<PmAgentResponse, String> {
     let prompt = prompt.into();
     if let Some(tool_request) = parse_tool_prompt(&prompt)? {
@@ -16,7 +25,7 @@ pub fn send_prompt(
     }
 
     let model = session.model.clone();
-    let provider = ProviderRegistry::builtins()
+    let provider = providers
         .provider_for(&model)
         .map_err(|error| error.to_string())?;
 
@@ -73,6 +82,7 @@ fn send_tool_prompt(
 mod tests {
     use super::*;
     use crate::{create_session, create_session_with_workspace};
+    use ai::{Message as AiMessage, RegisteredDynamicProvider, RegisteredProvider, StreamEvent};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -131,6 +141,32 @@ mod tests {
         let response = send_prompt(session, "hello").expect("prompt should run");
         assert_eq!(response.session.messages.len(), 2);
         assert_eq!(response.session.messages[1].content, "hello");
+    }
+
+    #[test]
+    fn normal_prompt_uses_injected_dynamic_provider_registry_like_pi() {
+        let session = create_session("dynamic-provider", "test");
+        let mut providers = ProviderRegistry::builtins();
+        providers.register(
+            RegisteredProvider::Dynamic(RegisteredDynamicProvider::new("local-echo", |_request| {
+                Ok(vec![StreamEvent::Finished {
+                    message: AiMessage {
+                        role: MessageRole::Assistant,
+                        content: "from dynamic provider".to_string(),
+                    },
+                }])
+            })),
+            Some("provider:test".to_string()),
+        );
+
+        let response = send_prompt_with_provider_registry(session, "hello", &providers)
+            .expect("prompt should run");
+
+        assert_eq!(response.session.messages.len(), 2);
+        assert_eq!(
+            response.session.messages[1].content,
+            "from dynamic provider"
+        );
     }
 
     fn temp_workspace() -> PathBuf {

@@ -17,7 +17,7 @@ mod updates;
 
 use crate::exec::{exec_command, ExecOptions};
 use crate::settings_manager::{SettingsManager, SettingsStorage, CONFIG_DIR_NAME};
-use paths::{display_path, local_source_path};
+use paths::{display_path, local_source_path, resolve_package_local_path};
 use resolve_runtime::local_directory_should_fallback_to_extension;
 use resolver::{merge_paths, sort_resolved_paths};
 use std::path::{Path, PathBuf};
@@ -660,7 +660,7 @@ fn resolve_explicit_entries_for_type(
         if entry.starts_with('!') || entry.starts_with('+') || entry.starts_with('-') {
             continue;
         }
-        let path = crate::utils::paths::resolve_path(&entry, base_dir, None);
+        let path = resolve_package_local_path(&entry, base_dir);
         if !path.exists() {
             continue;
         }

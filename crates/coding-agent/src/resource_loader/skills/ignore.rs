@@ -95,12 +95,54 @@ fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
 fn pattern_matches(pattern: &str, rel: &str) -> bool {
     let pattern = pattern.trim_end_matches('/');
     let rel = rel.trim_end_matches('/');
-    rel == pattern
+    path_pattern_matches(pattern, rel)
         || rel.starts_with(&format!("{pattern}/"))
         || rel
             .rsplit('/')
             .next()
-            .is_some_and(|file_name| file_name == pattern)
+            .is_some_and(|file_name| path_pattern_matches(pattern, file_name))
+}
+
+fn path_pattern_matches(pattern: &str, value: &str) -> bool {
+    if !pattern.contains(['*', '?']) {
+        return value == pattern;
+    }
+    glob_matches(pattern.as_bytes(), value.as_bytes())
+}
+
+fn glob_matches(pattern: &[u8], value: &[u8]) -> bool {
+    let (mut pattern_index, mut value_index) = (0, 0);
+    let mut star_index = None;
+    let mut star_value_index = 0;
+
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && pattern[pattern_index] != b'*'
+            && pattern[pattern_index] != b'?'
+            && pattern[pattern_index] == value[value_index]
+        {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'?' {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            star_value_index = value_index;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            star_value_index += 1;
+            value_index = star_value_index;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
 }
 
 fn to_posix_path(path: &Path) -> String {

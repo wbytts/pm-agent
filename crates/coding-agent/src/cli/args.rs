@@ -16,6 +16,12 @@ pub enum AppMode {
     Rpc,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliHelpOutput {
+    Stdout,
+    Stderr,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliDiagnosticType {
     Warning,
@@ -191,6 +197,13 @@ pub fn resolve_app_mode(parsed: &CliArgs, stdin_is_tty: bool) -> AppMode {
     }
 }
 
+pub fn help_output_target(parsed: &CliArgs, stdin_is_tty: bool) -> CliHelpOutput {
+    match resolve_app_mode(parsed, stdin_is_tty) {
+        AppMode::Interactive => CliHelpOutput::Stdout,
+        AppMode::Print | AppMode::Json | AppMode::Rpc => CliHelpOutput::Stderr,
+    }
+}
+
 fn parse_mode(value: &str) -> Option<CliMode> {
     match value {
         "text" => Some(CliMode::Text),
@@ -282,6 +295,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_version_help_and_session_flags_like_pi() {
+        let args = parse(&["--version", "--help", "some message"]);
+        assert!(args.version);
+        assert!(args.help);
+        assert_eq!(args.messages, vec!["some message"]);
+
+        let args = parse(&[
+            "--continue",
+            "-r",
+            "--no-session",
+            "--session",
+            "/tmp/session.jsonl",
+            "--fork",
+            "1234abcd",
+            "--session-dir",
+            "/tmp/sessions",
+            "--export",
+            "out.jsonl",
+        ]);
+        assert!(args.continue_session);
+        assert!(args.resume);
+        assert!(args.no_session);
+        assert_eq!(args.session.as_deref(), Some("/tmp/session.jsonl"));
+        assert_eq!(args.fork.as_deref(), Some("1234abcd"));
+        assert_eq!(args.session_dir.as_deref(), Some("/tmp/sessions"));
+        assert_eq!(args.export.as_deref(), Some("out.jsonl"));
+    }
+
+    #[test]
     fn parses_core_cli_flags_like_pi() {
         let args = parse(&[
             "--provider",
@@ -313,12 +355,55 @@ mod tests {
     }
 
     #[test]
+    fn parses_resource_disable_flags_like_pi() {
+        let args = parse(&[
+            "--no-extensions",
+            "-e",
+            "./ext.ts",
+            "--no-skills",
+            "--skill",
+            "./skill",
+            "--no-prompt-templates",
+            "--prompt-template",
+            "./prompts",
+            "--no-themes",
+            "--theme",
+            "./theme.json",
+            "--no-context-files",
+        ]);
+
+        assert!(args.no_extensions);
+        assert_eq!(args.extensions, vec!["./ext.ts"]);
+        assert!(args.no_skills);
+        assert_eq!(args.skills, vec!["./skill"]);
+        assert!(args.no_prompt_templates);
+        assert_eq!(args.prompt_templates, vec!["./prompts"]);
+        assert!(args.no_themes);
+        assert_eq!(args.themes, vec!["./theme.json"]);
+        assert!(args.no_context_files);
+    }
+
+    #[test]
     fn print_option_consumes_following_prompt_like_pi() {
         let args = parse(&["-p", "List files", "--mode", "json"]);
 
         assert!(args.print);
         assert_eq!(args.messages, vec!["List files"]);
         assert_eq!(resolve_app_mode(&args, true), AppMode::Json);
+    }
+
+    #[test]
+    fn print_option_keeps_yaml_frontmatter_prompt_and_does_not_consume_flags_like_pi() {
+        let prompt = "---\ntitle: hello\n---\nSay hi.";
+        let args = parse(&["-p", prompt]);
+        assert!(args.print);
+        assert_eq!(args.messages, vec![prompt]);
+        assert!(args.unknown_flags.is_empty());
+
+        let args = parse(&["-p", "--provider", "openai", "Say hi."]);
+        assert!(args.print);
+        assert_eq!(args.provider.as_deref(), Some("openai"));
+        assert_eq!(args.messages, vec!["Say hi."]);
     }
 
     #[test]
@@ -335,6 +420,19 @@ mod tests {
         let args = parse(&["--models", "sonnet,, haiku"]);
 
         assert_eq!(args.models, vec!["sonnet", "", "haiku"]);
+    }
+
+    #[test]
+    fn parses_list_models_optional_provider_like_pi() {
+        let args = parse(&["--list-models"]);
+        assert_eq!(args.list_models, Some(None));
+
+        let args = parse(&["--list-models", "openai"]);
+        assert_eq!(args.list_models, Some(Some("openai".to_string())));
+
+        let args = parse(&["--list-models", "--provider", "anthropic"]);
+        assert_eq!(args.list_models, Some(None));
+        assert_eq!(args.provider.as_deref(), Some("anthropic"));
     }
 
     #[test]
@@ -367,6 +465,26 @@ mod tests {
         assert_eq!(
             resolve_app_mode(&parse(&["--mode", "json"]), true),
             AppMode::Json
+        );
+    }
+
+    #[test]
+    fn routes_help_to_stderr_in_non_interactive_modes_like_pi_stdout_cleanliness() {
+        assert_eq!(
+            help_output_target(&parse(&["--help"]), true),
+            CliHelpOutput::Stdout
+        );
+        assert_eq!(
+            help_output_target(&parse(&["--mode", "json", "--help"]), true),
+            CliHelpOutput::Stderr
+        );
+        assert_eq!(
+            help_output_target(&parse(&["-p", "--help"]), true),
+            CliHelpOutput::Stderr
+        );
+        assert_eq!(
+            help_output_target(&parse(&["--help"]), false),
+            CliHelpOutput::Stderr
         );
     }
 }

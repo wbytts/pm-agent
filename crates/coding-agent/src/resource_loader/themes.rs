@@ -149,6 +149,30 @@ mod tests {
         assert_eq!(collision.loser_path, display_path(&second));
     }
 
+    #[test]
+    fn custom_theme_uses_content_name_instead_of_file_name_like_pi_picker() {
+        let dir = temp_dir();
+        let path = dir.join("foo.json");
+        fs::write(
+            &path,
+            r##"{
+                "name": "bar",
+                "colors": {
+                    "accent": "#ffffff"
+                }
+            }"##,
+        )
+        .expect("theme should be written");
+
+        let (themes, diagnostics) = load_themes([&path]);
+
+        assert!(diagnostics.is_empty());
+        assert_eq!(themes.len(), 1);
+        assert_eq!(themes[0].name, "bar");
+        assert_eq!(themes[0].path, display_path(&path));
+        assert_ne!(themes[0].name, "foo");
+    }
+
     fn temp_dir() -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)

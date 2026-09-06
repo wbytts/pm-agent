@@ -308,6 +308,23 @@ mod tests {
             normalize_path(" @~/a\u{00a0}b ", Some(&options)),
             PathBuf::from("/home/test/a b")
         );
+
+        let literal_tilde_options = PathInputOptions {
+            strip_at_prefix: true,
+            ..PathInputOptions::default()
+        };
+        assert_eq!(
+            normalize_path("~draft.md", Some(&literal_tilde_options)),
+            PathBuf::from("~draft.md")
+        );
+        assert_eq!(
+            normalize_path("@~draft.md", Some(&literal_tilde_options)),
+            PathBuf::from("~draft.md")
+        );
+        assert_eq!(
+            resolve_path("@~draft.md", "/tmp/project", Some(&literal_tilde_options)),
+            PathBuf::from("/tmp/project/~draft.md")
+        );
     }
 
     #[test]
@@ -354,6 +371,10 @@ mod tests {
         fs::write(root.join(screenshot), "").expect("write screenshot file");
         let curly = "Capture d\u{2019}ecran.txt";
         fs::write(root.join(curly), "").expect("write curly quote file");
+        let nfd = "filee\u{0301}.txt";
+        fs::write(root.join(nfd), "").expect("write nfd filename");
+        let nfc_curly = "Capture d\u{2019}\u{00e9}cran.txt";
+        fs::write(root.join(nfc_curly), "").expect("write nfc curly filename");
 
         assert_eq!(
             resolve_read_path("Screenshot 2024-01-01 at 10.00.00 AM.png", &root, None),
@@ -363,8 +384,36 @@ mod tests {
             resolve_read_path("Capture d'ecran.txt", &root, None),
             root.join(curly)
         );
+        let accent_result = resolve_read_path("file\u{00e9}.txt", &root, None);
+        assert!(accent_result.starts_with(&root));
+        assert!(accent_result
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("file") && name.ends_with(".txt")));
+        assert_eq!(
+            resolve_read_path("Capture d'\u{00e9}cran.txt", &root, None),
+            root.join(nfc_curly)
+        );
 
         let _ = fs::remove_dir_all(&root);
+
+        let lowercase_root =
+            std::env::temp_dir().join(format!("pm-agent-read-path-lower-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&lowercase_root);
+        fs::create_dir_all(&lowercase_root).expect("create lowercase temp root");
+        let lowercase_screenshot = "Screenshot 2024-01-01 at 10.00.00\u{202f}am.png";
+        fs::write(lowercase_root.join(lowercase_screenshot), "")
+            .expect("write lowercase screenshot file");
+        assert_eq!(
+            resolve_read_path(
+                "Screenshot 2024-01-01 at 10.00.00 am.png",
+                &lowercase_root,
+                None
+            ),
+            lowercase_root.join(lowercase_screenshot)
+        );
+
+        let _ = fs::remove_dir_all(&lowercase_root);
     }
 
     #[test]

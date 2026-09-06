@@ -19,6 +19,7 @@ pub(crate) fn parse_tool_prompt(prompt: &str) -> Result<Option<CodingToolRequest
         }
         "bash" => Ok(Some(CodingToolRequest::Bash {
             command: require_arg(rest, "/bash 需要命令内容")?.to_string(),
+            timeout: None,
         })),
         "ls" => Ok(Some(CodingToolRequest::Ls {
             path: optional_arg(rest),
@@ -37,8 +38,10 @@ pub(crate) fn parse_tool_prompt(prompt: &str) -> Result<Option<CodingToolRequest
             Ok(Some(CodingToolRequest::Grep {
                 pattern: pattern.to_string(),
                 path,
+                glob: None,
                 ignore_case: false,
                 literal: true,
+                context: None,
                 limit: None,
             }))
         }

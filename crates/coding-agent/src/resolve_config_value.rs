@@ -136,6 +136,8 @@ fn shell_command(command: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn resolves_literals_and_environment_names() {
@@ -154,5 +156,86 @@ mod tests {
             resolve_config_value("!printf resolved").as_deref(),
             Some("resolved")
         );
+    }
+
+    #[test]
+    fn failed_command_results_are_cached_like_pi() {
+        clear_config_value_cache();
+        let counter = temp_file("failed-command-cache");
+        fs::write(&counter, "0").expect("counter should be written");
+        let command = format!(
+            "!sh -c 'count=$(cat \"{}\"); echo $((count + 1)) > \"{}\"; exit 1'",
+            sh_path(&counter),
+            sh_path(&counter)
+        );
+
+        assert_eq!(resolve_config_value(&command), None);
+        assert_eq!(resolve_config_value(&command), None);
+
+        assert_eq!(
+            fs::read_to_string(&counter).expect("counter should be readable"),
+            "1\n"
+        );
+    }
+
+    #[test]
+    fn clearing_cache_allows_command_to_run_again_like_pi() {
+        clear_config_value_cache();
+        let counter = temp_file("clear-command-cache");
+        fs::write(&counter, "0").expect("counter should be written");
+        let command = format!(
+            "!sh -c 'count=$(cat \"{}\"); echo $((count + 1)) > \"{}\"; echo value'",
+            sh_path(&counter),
+            sh_path(&counter)
+        );
+
+        assert_eq!(resolve_config_value(&command).as_deref(), Some("value"));
+        clear_config_value_cache();
+        assert_eq!(resolve_config_value(&command).as_deref(), Some("value"));
+
+        assert_eq!(
+            fs::read_to_string(&counter).expect("counter should be readable"),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn environment_values_are_not_cached_like_pi() {
+        std::env::set_var("PM_AGENT_TEST_UNCACHED_CONFIG_VALUE", "first");
+        assert_eq!(
+            resolve_config_value("PM_AGENT_TEST_UNCACHED_CONFIG_VALUE").as_deref(),
+            Some("first")
+        );
+        std::env::set_var("PM_AGENT_TEST_UNCACHED_CONFIG_VALUE", "second");
+        assert_eq!(
+            resolve_config_value("PM_AGENT_TEST_UNCACHED_CONFIG_VALUE").as_deref(),
+            Some("second")
+        );
+        std::env::remove_var("PM_AGENT_TEST_UNCACHED_CONFIG_VALUE");
+    }
+
+    #[test]
+    fn empty_environment_values_fall_back_to_literal_like_pi() {
+        std::env::set_var("PM_AGENT_TEST_EMPTY_HEADER", "");
+
+        assert_eq!(
+            resolve_config_value("PM_AGENT_TEST_EMPTY_HEADER").as_deref(),
+            Some("PM_AGENT_TEST_EMPTY_HEADER")
+        );
+        std::env::remove_var("PM_AGENT_TEST_EMPTY_HEADER");
+    }
+
+    fn temp_file(label: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        std::env::temp_dir().join(format!("pm-agent-resolve-config-{label}-{nanos}"))
+    }
+
+    fn sh_path(path: &std::path::Path) -> String {
+        path.to_string_lossy()
+            .replace('\\', "/")
+            .replace('"', "\\\"")
     }
 }

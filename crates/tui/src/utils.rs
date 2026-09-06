@@ -1379,6 +1379,42 @@ mod tests {
     }
 
     #[test]
+    fn truncate_to_width_handles_pi_unicode_regressions() {
+        let cases = [
+            (
+                r#"✔ script to run › dev $ concurrently "vite" "node --import tsx ./"#,
+                65,
+            ),
+            (
+                "🎉 Celebration! 🚀 Launch 📦 Package ready for deployment now",
+                38,
+            ),
+            ("Hello 世界 Test 你好 More text here that is long", 28),
+        ];
+
+        for (message, max_width) in cases {
+            let truncated = truncate_to_width(message, max_width, "...", false);
+
+            assert!(
+                visible_width(&truncated) <= max_width,
+                "truncated text exceeded width: {truncated:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn truncate_to_width_keeps_cursor_line_within_terminal_width_like_pi_issue() {
+        let message =
+            r#"✔ script to run › dev $ concurrently "vite" "node --import tsx ./server.ts""#;
+        let terminal_width = 67;
+        let cursor_width = 2;
+        let truncated = truncate_to_width(message, terminal_width - cursor_width, "...", false);
+
+        assert!(visible_width(&truncated) + cursor_width <= terminal_width);
+        assert!(truncated.contains("..."));
+    }
+
+    #[test]
     fn slice_columns_preserves_pending_ansi() {
         let sliced = slice_with_width("\x1b[31mabc界", 2, 3, true);
         assert_eq!(sliced.text, "\x1b[31mc界");

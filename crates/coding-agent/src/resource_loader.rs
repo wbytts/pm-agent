@@ -22,6 +22,7 @@ use agent::harness::{PromptTemplate, Skill};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use context::{discover_first_file, load_project_context_files, resolve_prompt_input};
 use extension_resources::discovered_resources_to_paths;
@@ -57,7 +58,7 @@ pub struct DefaultResourceLoader<S: SettingsStorage> {
     additional_skill_paths: Vec<String>,
     additional_prompt_paths: Vec<String>,
     additional_theme_paths: Vec<String>,
-    extension_factories: Vec<(String, Box<dyn ExtensionFactory>)>,
+    extension_factories: Vec<(String, Arc<dyn ExtensionFactory>)>,
     no_extensions: bool,
     no_skills: bool,
     no_prompt_templates: bool,
@@ -119,7 +120,11 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
             additional_skill_paths: options.additional_skill_paths,
             additional_prompt_paths: options.additional_prompt_paths,
             additional_theme_paths: options.additional_theme_paths,
-            extension_factories: options.extension_factories,
+            extension_factories: options
+                .extension_factories
+                .into_iter()
+                .map(|(path, factory)| (path, Arc::from(factory)))
+                .collect(),
             no_extensions: options.no_extensions,
             no_skills: options.no_skills,
             no_prompt_templates: options.no_prompt_templates,
@@ -145,6 +150,7 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
+        self.runtime = create_extension_runtime();
         self.settings_manager.reload();
         let resolved = LocalPackageManager::resolve_from_settings(
             self.package_runner.as_ref(),
@@ -172,14 +178,12 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
             )
         };
         self.extensions = discover_and_load_extensions(&extension_paths, &mut self.runtime);
-        let mut factory_result = load_extensions(
-            std::mem::take(&mut self.extension_factories),
-            &mut self.runtime,
-        );
+        let mut factory_result = load_extensions(&self.extension_factories, &mut self.runtime);
         self.extensions
             .extensions
             .append(&mut factory_result.extensions);
         self.extensions.errors.append(&mut factory_result.errors);
+        self.extensions.runtime = self.runtime.clone();
         self.report_extension_conflicts();
         self.apply_extension_source_info();
         self.report_missing_additional_extension_paths();
@@ -332,7 +336,7 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
         self.skills = skills
             .into_iter()
             .map(|mut skill| {
-                skill.source_info = self.source_info_value_for_path(&skill.file_path);
+                skill.source_info = self.source_info_value_for_skill_path(&skill.file_path);
                 skill
             })
             .collect();
@@ -515,15 +519,34 @@ impl<S: SettingsStorage> DefaultResourceLoader<S> {
         serde_json::to_value(source_info).ok()
     }
 
+    fn source_info_value_for_skill_path(&self, path: &str) -> Option<Value> {
+        let source_info = if self.no_skills
+            && self
+                .additional_skill_paths
+                .iter()
+                .map(|skill_path| self.resolve_resource_path(skill_path))
+                .any(|skill_path| is_under_path(path, skill_path))
+        {
+            self.default_source_info_for_path(path)
+        } else {
+            find_source_info_for_path(path, &self.metadata_by_path)
+                .unwrap_or_else(|| self.default_source_info_for_path(path))
+        };
+        serde_json::to_value(source_info).ok()
+    }
+
     fn default_source_info_for_path(&self, path: &str) -> crate::source_info::SourceInfo {
-        let resolved = self.resolve_resource_path(path);
+        let resolved = normalize_path(self.resolve_resource_path(path));
         let normalized = display_path(&resolved);
-        let user_roots = [
+        let mut user_roots = vec![
             self.agent_dir.join("skills"),
             self.agent_dir.join("prompts"),
             self.agent_dir.join("themes"),
             self.agent_dir.join("extensions"),
         ];
+        if let Some(user_agents_dir) = &self.user_agents_dir {
+            user_roots.push(user_agents_dir.join("skills"));
+        }
         let project_roots = [
             self.cwd
                 .join(crate::settings_manager::CONFIG_DIR_NAME)
@@ -975,6 +998,56 @@ mod tests {
     }
 
     #[test]
+    fn explicit_user_skill_path_keeps_user_source_info_when_defaults_disabled_like_pi() {
+        let dir = temp_dir();
+        let agent_dir = temp_dir();
+        let user_agents_dir = temp_dir().join(".agents");
+        let skill_dir = user_agents_dir.join("skills").join("personal");
+        fs::create_dir_all(&skill_dir).expect("skill dir");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: personal\ndescription: Personal skill\n---\nBody",
+        )
+        .expect("skill");
+        let settings = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({}));
+        let mut loader = DefaultResourceLoader::new(DefaultResourceLoaderOptions {
+            cwd: dir,
+            agent_dir: agent_dir.clone(),
+            user_agents_dir: Some(user_agents_dir.clone()),
+            settings_manager: settings,
+            package_runner: None,
+            additional_extension_paths: Vec::new(),
+            additional_skill_paths: vec![display_path(&skill_dir)],
+            additional_prompt_paths: Vec::new(),
+            additional_theme_paths: Vec::new(),
+            extension_factories: Vec::new(),
+            no_extensions: true,
+            no_skills: true,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            system_prompt: None,
+            append_system_prompt: Vec::new(),
+        });
+
+        loader.reload().expect("reload should succeed");
+
+        let commands =
+            crate::slash_commands::slash_commands_to_rpc(&loader.resource_slash_commands());
+        let command = commands
+            .iter()
+            .find(|command| command.name == "skill:personal")
+            .expect("personal skill command should be exposed");
+        assert_eq!(command.source_info["source"], "local");
+        assert_eq!(command.source_info["scope"], "user");
+        assert_eq!(command.source_info["origin"], "top-level");
+        assert_eq!(
+            command.source_info["baseDir"],
+            display_path(normalize_path(user_agents_dir.join("skills")))
+        );
+    }
+
+    #[test]
     fn reload_reports_missing_additional_extension_path_like_pi() {
         let dir = temp_dir();
         let missing_extension = dir.join("missing-extension.ts");
@@ -1228,6 +1301,63 @@ mod tests {
             .iter()
             .find(|command| command.name == "generated")
             .expect("generated prompt command should be exposed");
+        assert_eq!(command.source_info["source"], "npm:pkg");
+        assert_eq!(command.source_info["scope"], "user");
+        assert_eq!(command.source_info["origin"], "package");
+        let base_dir = command.source_info["baseDir"]
+            .as_str()
+            .expect("baseDir should be serialized");
+        assert!(base_dir.ends_with("/npm/node_modules/pkg"));
+    }
+
+    #[test]
+    fn reload_preserves_package_skill_source_info_like_pi() {
+        let dir = temp_dir();
+        let agent_dir = temp_dir();
+        let package_dir = agent_dir.join("npm").join("node_modules").join("pkg");
+        let skill_dir = package_dir.join("skills").join("review");
+        fs::create_dir_all(&skill_dir).expect("package skills dir");
+        fs::write(
+            package_dir.join("package.json"),
+            r#"{"pi":{"skills":["skills/review"]}}"#,
+        )
+        .expect("package manifest");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: review\ndescription: Review skill\n---\nBody",
+        )
+        .expect("package skill");
+        let settings = SettingsManager::<InMemorySettingsStorage>::in_memory(json!({
+            "packages": ["npm:pkg"]
+        }));
+        let mut loader = DefaultResourceLoader::new(DefaultResourceLoaderOptions {
+            cwd: dir,
+            agent_dir,
+            user_agents_dir: Some(temp_dir().join(".agents")),
+            settings_manager: settings,
+            package_runner: None,
+            additional_extension_paths: Vec::new(),
+            additional_skill_paths: Vec::new(),
+            additional_prompt_paths: Vec::new(),
+            additional_theme_paths: Vec::new(),
+            extension_factories: Vec::new(),
+            no_extensions: true,
+            no_skills: false,
+            no_prompt_templates: true,
+            no_themes: true,
+            no_context_files: true,
+            system_prompt: None,
+            append_system_prompt: Vec::new(),
+        });
+
+        loader.reload().expect("reload should succeed");
+
+        let commands =
+            crate::slash_commands::slash_commands_to_rpc(&loader.resource_slash_commands());
+        let command = commands
+            .iter()
+            .find(|command| command.name == "skill:review")
+            .expect("review skill command should be exposed");
         assert_eq!(command.source_info["source"], "npm:pkg");
         assert_eq!(command.source_info["scope"], "user");
         assert_eq!(command.source_info["origin"], "package");

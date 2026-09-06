@@ -10,7 +10,7 @@ pub enum RpcCommand {
         message: String,
         #[serde(default)]
         images: Vec<ai::ContentBlock>,
-        #[serde(default)]
+        #[serde(default, alias = "streamingBehavior")]
         streaming_behavior: Option<StreamingBehavior>,
     },
     Steer {
@@ -30,8 +30,11 @@ pub enum RpcCommand {
     },
     NewSession {
         id: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "parentSession")]
         parent_session: Option<String>,
+    },
+    Reload {
+        id: Option<String>,
     },
     GetState {
         id: Option<String>,
@@ -39,6 +42,7 @@ pub enum RpcCommand {
     SetModel {
         id: Option<String>,
         provider: String,
+        #[serde(alias = "modelId")]
         model_id: String,
     },
     CycleModel {
@@ -64,7 +68,7 @@ pub enum RpcCommand {
     },
     Compact {
         id: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "customInstructions")]
         custom_instructions: Option<String>,
     },
     SetAutoCompaction {
@@ -88,26 +92,62 @@ pub enum RpcCommand {
     GetSessionStats {
         id: Option<String>,
     },
+    GetSessionInfo {
+        id: Option<String>,
+    },
+    GetChangelog {
+        id: Option<String>,
+    },
     ExportHtml {
         id: Option<String>,
-        #[serde(default)]
+        #[serde(default, alias = "outputPath")]
         output_path: Option<String>,
+    },
+    ShareSession {
+        id: Option<String>,
     },
     SwitchSession {
         id: Option<String>,
+        #[serde(alias = "sessionPath")]
         session_path: String,
+    },
+    ImportSession {
+        id: Option<String>,
+        #[serde(alias = "inputPath")]
+        input_path: String,
+        #[serde(default, alias = "cwdOverride")]
+        cwd_override: Option<String>,
     },
     Fork {
         id: Option<String>,
+        #[serde(alias = "entryId")]
         entry_id: String,
+        #[serde(default)]
+        position: ForkPosition,
     },
     Clone {
         id: Option<String>,
+    },
+    NavigateTree {
+        id: Option<String>,
+        #[serde(alias = "targetId")]
+        target_id: String,
+        #[serde(default)]
+        summarize: bool,
+        #[serde(default, alias = "customInstructions")]
+        custom_instructions: Option<String>,
+        #[serde(default, alias = "replaceInstructions")]
+        replace_instructions: bool,
+        #[serde(default)]
+        label: Option<String>,
     },
     GetForkMessages {
         id: Option<String>,
     },
     GetLastAssistantText {
+        id: Option<String>,
+    },
+    CopyLastAssistantText {
         id: Option<String>,
     },
     SetSessionName {
@@ -139,6 +179,7 @@ impl RpcCommand {
             | Self::FollowUp { id, .. }
             | Self::Abort { id }
             | Self::NewSession { id, .. }
+            | Self::Reload { id }
             | Self::GetState { id }
             | Self::SetModel { id, .. }
             | Self::CycleModel { id }
@@ -154,12 +195,18 @@ impl RpcCommand {
             | Self::Bash { id, .. }
             | Self::AbortBash { id }
             | Self::GetSessionStats { id }
+            | Self::GetSessionInfo { id }
+            | Self::GetChangelog { id }
             | Self::ExportHtml { id, .. }
+            | Self::ShareSession { id }
             | Self::SwitchSession { id, .. }
+            | Self::ImportSession { id, .. }
             | Self::Fork { id, .. }
             | Self::Clone { id }
+            | Self::NavigateTree { id, .. }
             | Self::GetForkMessages { id }
             | Self::GetLastAssistantText { id }
+            | Self::CopyLastAssistantText { id }
             | Self::SetSessionName { id, .. }
             | Self::GetMessages { id }
             | Self::GetCommands { id } => id.as_deref(),
@@ -177,6 +224,7 @@ impl RpcCommand {
             Self::FollowUp { .. } => RpcCommandType::FollowUp,
             Self::Abort { .. } => RpcCommandType::Abort,
             Self::NewSession { .. } => RpcCommandType::NewSession,
+            Self::Reload { .. } => RpcCommandType::Reload,
             Self::GetState { .. } => RpcCommandType::GetState,
             Self::SetModel { .. } => RpcCommandType::SetModel,
             Self::CycleModel { .. } => RpcCommandType::CycleModel,
@@ -192,12 +240,18 @@ impl RpcCommand {
             Self::Bash { .. } => RpcCommandType::Bash,
             Self::AbortBash { .. } => RpcCommandType::AbortBash,
             Self::GetSessionStats { .. } => RpcCommandType::GetSessionStats,
+            Self::GetSessionInfo { .. } => RpcCommandType::GetSessionInfo,
+            Self::GetChangelog { .. } => RpcCommandType::GetChangelog,
             Self::ExportHtml { .. } => RpcCommandType::ExportHtml,
+            Self::ShareSession { .. } => RpcCommandType::ShareSession,
             Self::SwitchSession { .. } => RpcCommandType::SwitchSession,
+            Self::ImportSession { .. } => RpcCommandType::ImportSession,
             Self::Fork { .. } => RpcCommandType::Fork,
             Self::Clone { .. } => RpcCommandType::Clone,
+            Self::NavigateTree { .. } => RpcCommandType::NavigateTree,
             Self::GetForkMessages { .. } => RpcCommandType::GetForkMessages,
             Self::GetLastAssistantText { .. } => RpcCommandType::GetLastAssistantText,
+            Self::CopyLastAssistantText { .. } => RpcCommandType::CopyLastAssistantText,
             Self::SetSessionName { .. } => RpcCommandType::SetSessionName,
             Self::GetMessages { .. } => RpcCommandType::GetMessages,
             Self::GetCommands { .. } => RpcCommandType::GetCommands,
@@ -243,6 +297,7 @@ impl RpcCommand {
                 id: next_id,
                 parent_session,
             },
+            Self::Reload { .. } => Self::Reload { id: next_id },
             Self::GetState { .. } => Self::GetState { id: next_id },
             Self::SetModel {
                 provider, model_id, ..
@@ -279,21 +334,52 @@ impl RpcCommand {
             },
             Self::AbortBash { .. } => Self::AbortBash { id: next_id },
             Self::GetSessionStats { .. } => Self::GetSessionStats { id: next_id },
+            Self::GetSessionInfo { .. } => Self::GetSessionInfo { id: next_id },
+            Self::GetChangelog { .. } => Self::GetChangelog { id: next_id },
             Self::ExportHtml { output_path, .. } => Self::ExportHtml {
                 id: next_id,
                 output_path,
             },
+            Self::ShareSession { .. } => Self::ShareSession { id: next_id },
             Self::SwitchSession { session_path, .. } => Self::SwitchSession {
                 id: next_id,
                 session_path,
             },
-            Self::Fork { entry_id, .. } => Self::Fork {
+            Self::ImportSession {
+                input_path,
+                cwd_override,
+                ..
+            } => Self::ImportSession {
+                id: next_id,
+                input_path,
+                cwd_override,
+            },
+            Self::Fork {
+                entry_id, position, ..
+            } => Self::Fork {
                 id: next_id,
                 entry_id,
+                position,
             },
             Self::Clone { .. } => Self::Clone { id: next_id },
+            Self::NavigateTree {
+                target_id,
+                summarize,
+                custom_instructions,
+                replace_instructions,
+                label,
+                ..
+            } => Self::NavigateTree {
+                id: next_id,
+                target_id,
+                summarize,
+                custom_instructions,
+                replace_instructions,
+                label,
+            },
             Self::GetForkMessages { .. } => Self::GetForkMessages { id: next_id },
             Self::GetLastAssistantText { .. } => Self::GetLastAssistantText { id: next_id },
+            Self::CopyLastAssistantText { .. } => Self::CopyLastAssistantText { id: next_id },
             Self::SetSessionName { name, .. } => Self::SetSessionName { id: next_id, name },
             Self::GetMessages { .. } => Self::GetMessages { id: next_id },
             Self::GetCommands { .. } => Self::GetCommands { id: next_id },
@@ -303,6 +389,47 @@ impl RpcCommand {
 }
 
 impl RpcCommandType {
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Prompt,
+            Self::Steer,
+            Self::FollowUp,
+            Self::Abort,
+            Self::NewSession,
+            Self::Reload,
+            Self::GetState,
+            Self::SetModel,
+            Self::CycleModel,
+            Self::GetAvailableModels,
+            Self::SetThinkingLevel,
+            Self::CycleThinkingLevel,
+            Self::SetSteeringMode,
+            Self::SetFollowUpMode,
+            Self::Compact,
+            Self::SetAutoCompaction,
+            Self::SetAutoRetry,
+            Self::AbortRetry,
+            Self::Bash,
+            Self::AbortBash,
+            Self::GetSessionStats,
+            Self::GetSessionInfo,
+            Self::GetChangelog,
+            Self::ExportHtml,
+            Self::ShareSession,
+            Self::SwitchSession,
+            Self::ImportSession,
+            Self::Fork,
+            Self::Clone,
+            Self::NavigateTree,
+            Self::GetForkMessages,
+            Self::GetLastAssistantText,
+            Self::CopyLastAssistantText,
+            Self::SetSessionName,
+            Self::GetMessages,
+            Self::GetCommands,
+        ]
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Prompt => "prompt",
@@ -310,6 +437,7 @@ impl RpcCommandType {
             Self::FollowUp => "follow_up",
             Self::Abort => "abort",
             Self::NewSession => "new_session",
+            Self::Reload => "reload",
             Self::GetState => "get_state",
             Self::SetModel => "set_model",
             Self::CycleModel => "cycle_model",
@@ -325,12 +453,18 @@ impl RpcCommandType {
             Self::Bash => "bash",
             Self::AbortBash => "abort_bash",
             Self::GetSessionStats => "get_session_stats",
+            Self::GetSessionInfo => "get_session_info",
+            Self::GetChangelog => "get_changelog",
             Self::ExportHtml => "export_html",
+            Self::ShareSession => "share_session",
             Self::SwitchSession => "switch_session",
+            Self::ImportSession => "import_session",
             Self::Fork => "fork",
             Self::Clone => "clone",
+            Self::NavigateTree => "navigate_tree",
             Self::GetForkMessages => "get_fork_messages",
             Self::GetLastAssistantText => "get_last_assistant_text",
+            Self::CopyLastAssistantText => "copy_last_assistant_text",
             Self::SetSessionName => "set_session_name",
             Self::GetMessages => "get_messages",
             Self::GetCommands => "get_commands",
@@ -360,6 +494,7 @@ pub enum RpcCommandType {
     FollowUp,
     Abort,
     NewSession,
+    Reload,
     GetState,
     SetModel,
     CycleModel,
@@ -375,15 +510,29 @@ pub enum RpcCommandType {
     Bash,
     AbortBash,
     GetSessionStats,
+    GetSessionInfo,
+    GetChangelog,
     ExportHtml,
+    ShareSession,
     SwitchSession,
+    ImportSession,
     Fork,
     Clone,
+    NavigateTree,
     GetForkMessages,
     GetLastAssistantText,
+    CopyLastAssistantText,
     SetSessionName,
     GetMessages,
     GetCommands,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ForkPosition {
+    #[default]
+    Before,
+    At,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -534,6 +683,281 @@ mod tests {
     }
 
     #[test]
+    fn accepts_pi_rpc_camel_case_command_fields() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "set_model",
+            "id": "model-1",
+            "provider": "openai",
+            "modelId": "gpt-5",
+        }))
+        .expect("set model command");
+
+        match command {
+            RpcCommand::SetModel { model_id, .. } => assert_eq!(model_id, "gpt-5"),
+            other => panic!("expected set model command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "new_session",
+            "parentSession": "/tmp/parent.jsonl",
+        }))
+        .expect("new session command");
+
+        match command {
+            RpcCommand::NewSession { parent_session, .. } => {
+                assert_eq!(parent_session.as_deref(), Some("/tmp/parent.jsonl"))
+            }
+            other => panic!("expected new session command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "prompt",
+            "message": "hi",
+            "streamingBehavior": "followUp",
+        }))
+        .expect("prompt command");
+        match command {
+            RpcCommand::Prompt {
+                streaming_behavior, ..
+            } => assert_eq!(streaming_behavior, Some(StreamingBehavior::FollowUp)),
+            other => panic!("expected prompt command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "compact",
+            "customInstructions": "short",
+        }))
+        .expect("compact command");
+        match command {
+            RpcCommand::Compact {
+                custom_instructions,
+                ..
+            } => assert_eq!(custom_instructions.as_deref(), Some("short")),
+            other => panic!("expected compact command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "export_html",
+            "outputPath": "/tmp/out.html",
+        }))
+        .expect("export html command");
+        match command {
+            RpcCommand::ExportHtml { output_path, .. } => {
+                assert_eq!(output_path.as_deref(), Some("/tmp/out.html"))
+            }
+            other => panic!("expected export html command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "switch_session",
+            "sessionPath": "/tmp/session.jsonl",
+        }))
+        .expect("switch session command");
+        match command {
+            RpcCommand::SwitchSession { session_path, .. } => {
+                assert_eq!(session_path, "/tmp/session.jsonl")
+            }
+            other => panic!("expected switch session command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "import_session",
+            "inputPath": "/tmp/source.jsonl",
+            "cwdOverride": "/tmp/project",
+        }))
+        .expect("import session command");
+        match command {
+            RpcCommand::ImportSession {
+                input_path,
+                cwd_override,
+                ..
+            } => {
+                assert_eq!(input_path, "/tmp/source.jsonl");
+                assert_eq!(cwd_override.as_deref(), Some("/tmp/project"));
+            }
+            other => panic!("expected import session command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "fork",
+            "entryId": "entry-1",
+            "position": "at",
+        }))
+        .expect("fork command");
+        match command {
+            RpcCommand::Fork {
+                entry_id, position, ..
+            } => {
+                assert_eq!(entry_id, "entry-1");
+                assert_eq!(position, ForkPosition::At);
+            }
+            other => panic!("expected fork command, got {other:?}"),
+        }
+
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "navigate_tree",
+            "targetId": "entry-2",
+            "customInstructions": "focus",
+            "replaceInstructions": true,
+        }))
+        .expect("navigate tree command");
+        match command {
+            RpcCommand::NavigateTree {
+                target_id,
+                custom_instructions,
+                replace_instructions,
+                ..
+            } => {
+                assert_eq!(target_id, "entry-2");
+                assert_eq!(custom_instructions.as_deref(), Some("focus"));
+                assert!(replace_instructions);
+            }
+            other => panic!("expected navigate tree command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reload_command_uses_pi_name() {
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"type": "reload", "id": "reload-1"}))
+                .expect("reload command");
+
+        assert_eq!(command.command_type(), RpcCommandType::Reload);
+        assert_eq!(command.id(), Some("reload-1"));
+        assert_eq!(command.command_type().as_str(), "reload");
+    }
+
+    #[test]
+    fn get_session_info_command_uses_crates_runtime_name() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "get_session_info",
+            "id": "session-info-1",
+        }))
+        .expect("session info command");
+
+        assert_eq!(command.command_type(), RpcCommandType::GetSessionInfo);
+        assert_eq!(command.id(), Some("session-info-1"));
+        assert_eq!(command.command_type().as_str(), "get_session_info");
+    }
+
+    #[test]
+    fn get_changelog_command_uses_crates_runtime_name() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "get_changelog",
+            "id": "changelog-1",
+        }))
+        .expect("changelog command");
+
+        assert_eq!(command.command_type(), RpcCommandType::GetChangelog);
+        assert_eq!(command.id(), Some("changelog-1"));
+        assert_eq!(command.command_type().as_str(), "get_changelog");
+    }
+
+    #[test]
+    fn navigate_tree_command_uses_pi_name() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "navigate_tree",
+            "id": "tree-1",
+            "target_id": "entry-1",
+            "summarize": true,
+            "custom_instructions": "focus",
+            "replace_instructions": true,
+            "label": "checkpoint",
+        }))
+        .expect("navigate tree command");
+
+        assert_eq!(command.command_type(), RpcCommandType::NavigateTree);
+        assert_eq!(command.id(), Some("tree-1"));
+        assert_eq!(command.command_type().as_str(), "navigate_tree");
+        match command {
+            RpcCommand::NavigateTree {
+                target_id,
+                summarize,
+                custom_instructions,
+                replace_instructions,
+                label,
+                ..
+            } => {
+                assert_eq!(target_id, "entry-1");
+                assert!(summarize);
+                assert_eq!(custom_instructions.as_deref(), Some("focus"));
+                assert!(replace_instructions);
+                assert_eq!(label.as_deref(), Some("checkpoint"));
+            }
+            other => panic!("expected navigate tree command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_session_command_uses_crates_runtime_name() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "import_session",
+            "id": "import-1",
+            "input_path": "/tmp/session.jsonl",
+            "cwd_override": "/tmp/project",
+        }))
+        .expect("import session command");
+
+        assert_eq!(command.command_type(), RpcCommandType::ImportSession);
+        assert_eq!(command.id(), Some("import-1"));
+        assert_eq!(command.command_type().as_str(), "import_session");
+        match command {
+            RpcCommand::ImportSession {
+                input_path,
+                cwd_override,
+                ..
+            } => {
+                assert_eq!(input_path, "/tmp/session.jsonl");
+                assert_eq!(cwd_override.as_deref(), Some("/tmp/project"));
+            }
+            other => panic!("expected import session command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_session_command_defaults_cwd_override() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "import_session",
+            "input_path": "/tmp/session.jsonl",
+        }))
+        .expect("import session command");
+
+        match command {
+            RpcCommand::ImportSession { cwd_override, .. } => assert_eq!(cwd_override, None),
+            other => panic!("expected import session command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn share_session_command_uses_crates_runtime_name() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "share_session",
+            "id": "share-1",
+        }))
+        .expect("share command");
+
+        assert_eq!(command.command_type(), RpcCommandType::ShareSession);
+        assert_eq!(command.id(), Some("share-1"));
+        assert_eq!(command.command_type().as_str(), "share_session");
+    }
+
+    #[test]
+    fn copy_last_assistant_text_command_uses_crates_runtime_name() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "copy_last_assistant_text",
+            "id": "copy-1",
+        }))
+        .expect("copy command");
+
+        assert_eq!(
+            command.command_type(),
+            RpcCommandType::CopyLastAssistantText
+        );
+        assert_eq!(command.id(), Some("copy-1"));
+        assert_eq!(command.command_type().as_str(), "copy_last_assistant_text");
+    }
+
+    #[test]
     fn response_matches_protocol_shape() {
         let response = RpcResponse::ok(
             Some("req_1".to_string()),
@@ -545,5 +969,37 @@ mod tests {
         assert_eq!(value["type"], "response");
         assert_eq!(value["success"], true);
         assert_eq!(value["command"], "get_messages");
+    }
+
+    #[test]
+    fn fork_position_defaults_to_before_like_pi() {
+        let command: RpcCommand =
+            serde_json::from_value(serde_json::json!({"type": "fork", "entry_id": "entry-1"}))
+                .expect("fork command");
+
+        match command {
+            RpcCommand::Fork {
+                entry_id, position, ..
+            } => {
+                assert_eq!(entry_id, "entry-1");
+                assert_eq!(position, ForkPosition::Before);
+            }
+            other => panic!("expected fork command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fork_position_accepts_at_like_pi() {
+        let command: RpcCommand = serde_json::from_value(serde_json::json!({
+            "type": "fork",
+            "entry_id": "entry-1",
+            "position": "at",
+        }))
+        .expect("fork command");
+
+        match command {
+            RpcCommand::Fork { position, .. } => assert_eq!(position, ForkPosition::At),
+            other => panic!("expected fork command, got {other:?}"),
+        }
     }
 }

@@ -1,13 +1,26 @@
 use super::manifest::read_pi_manifest;
 use super::types::ResourceType;
+use crate::utils::paths::{resolve_path, PathInputOptions};
 use std::path::{Component, Path, PathBuf};
 
 pub(super) fn local_source_path(source: &str) -> Option<PathBuf> {
+    let source = source.trim();
     let path = PathBuf::from(source);
     if path.is_absolute() || source.starts_with('.') || source.starts_with('~') {
         return Some(expand_home(path));
     }
     None
+}
+
+pub(super) fn resolve_package_local_path(input: &str, base_dir: impl AsRef<Path>) -> PathBuf {
+    resolve_path(
+        input,
+        base_dir,
+        Some(&PathInputOptions {
+            trim: true,
+            ..PathInputOptions::default()
+        }),
+    )
 }
 
 fn expand_home(path: PathBuf) -> PathBuf {

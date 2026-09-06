@@ -43,6 +43,23 @@ pub enum OAuthSelectorAction {
     Cancel,
 }
 
+pub fn is_api_key_login_provider<'a>(
+    provider_id: &str,
+    oauth_provider_ids: impl IntoIterator<Item = &'a str>,
+    built_in_provider_ids: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    if crate::provider_display_names::built_in_provider_display_name(provider_id).is_some() {
+        return true;
+    }
+    if built_in_provider_ids
+        .into_iter()
+        .any(|id| id == provider_id)
+    {
+        return false;
+    }
+    !oauth_provider_ids.into_iter().any(|id| id == provider_id)
+}
+
 pub struct OAuthSelectorState {
     mode: AuthSelectorMode,
     all_providers: Vec<AuthSelectorProvider>,
@@ -202,8 +219,9 @@ impl AuthSelectorCredentialType {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuthSelectorCredentialType, AuthSelectorMode, AuthSelectorProvider, AuthSelectorStatus,
-        AuthStatusSource, OAuthSelectorAction, OAuthSelectorState,
+        is_api_key_login_provider, AuthSelectorCredentialType, AuthSelectorMode,
+        AuthSelectorProvider, AuthSelectorStatus, AuthStatusSource, OAuthSelectorAction,
+        OAuthSelectorState,
     };
     use crate::keybindings::app_keybindings;
     use std::collections::BTreeMap;
@@ -320,6 +338,7 @@ mod tests {
     fn oauth_selector_status_indicators_match_pi_messages() {
         let oauth = provider("anthropic", "Anthropic", "oauth");
         let api_key = provider("openai", "OpenAI", "api_key");
+        let api_key_anthropic = provider("anthropic", "Anthropic", "api_key");
 
         assert_eq!(
             OAuthSelectorState::status_indicator(
@@ -328,6 +347,14 @@ mod tests {
                 AuthSelectorStatus::default()
             ),
             " ✓ configured"
+        );
+        assert_eq!(
+            OAuthSelectorState::status_indicator(
+                &api_key_anthropic,
+                Some(AuthSelectorCredentialType::OAuth),
+                AuthSelectorStatus::default()
+            ),
+            " • subscription configured"
         );
         assert_eq!(
             OAuthSelectorState::status_indicator(
@@ -352,6 +379,71 @@ mod tests {
             OAuthSelectorState::status_indicator(&oauth, None, AuthSelectorStatus::default()),
             " • unconfigured"
         );
+    }
+
+    #[test]
+    fn oauth_selector_status_indicators_show_models_json_sources_like_pi() {
+        let api_key = provider("local-proxy", "local-proxy", "api_key");
+
+        assert_eq!(
+            OAuthSelectorState::status_indicator(
+                &api_key,
+                None,
+                AuthSelectorStatus {
+                    source: Some(AuthStatusSource::ModelsJsonKey),
+                    label: None,
+                }
+            ),
+            " ✓ key in models.json"
+        );
+        assert_eq!(
+            OAuthSelectorState::status_indicator(
+                &api_key,
+                None,
+                AuthSelectorStatus {
+                    source: Some(AuthStatusSource::ModelsJsonCommand),
+                    label: None,
+                }
+            ),
+            " ✓ command in models.json"
+        );
+    }
+
+    #[test]
+    fn api_key_login_provider_filter_keeps_builtin_api_key_providers_separate_like_pi() {
+        let oauth_provider_ids = ["anthropic", "github-copilot", "custom-oauth"];
+        let built_in_provider_ids = ["anthropic", "github-copilot", "amazon-bedrock", "openai"];
+
+        assert!(is_api_key_login_provider(
+            "anthropic",
+            oauth_provider_ids,
+            built_in_provider_ids,
+        ));
+        assert!(is_api_key_login_provider(
+            "openai",
+            oauth_provider_ids,
+            built_in_provider_ids,
+        ));
+        assert!(!is_api_key_login_provider(
+            "github-copilot",
+            oauth_provider_ids,
+            built_in_provider_ids,
+        ));
+        assert!(is_api_key_login_provider(
+            "amazon-bedrock",
+            oauth_provider_ids,
+            built_in_provider_ids,
+        ));
+        assert!(!is_api_key_login_provider(
+            "custom-oauth",
+            oauth_provider_ids,
+            built_in_provider_ids,
+        ));
+        assert!(is_api_key_login_provider(
+            "custom-api",
+            oauth_provider_ids,
+            built_in_provider_ids,
+        ));
     }
 
     fn state(mode: AuthSelectorMode, providers: Vec<AuthSelectorProvider>) -> OAuthSelectorState {

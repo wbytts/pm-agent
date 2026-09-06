@@ -75,7 +75,7 @@ pub use paths::{
     PathInputOptions,
 };
 pub use pi_user_agent::get_pi_user_agent;
-pub use shell::{get_shell_config, sanitize_binary_output, ShellConfig};
+pub use shell::{get_shell_config, get_shell_env, sanitize_binary_output, ShellConfig};
 pub use sleep::sleep;
 pub use syntax_highlight::{render_highlighted_html, HighlightFormatter, HighlightTheme};
 pub use tools_manager::{

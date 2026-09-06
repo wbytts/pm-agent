@@ -3,8 +3,8 @@ use serde_json::Value;
 
 use super::types::{
     Extension, ExtensionCommandContext, ExtensionContext, ExtensionError, ExtensionEvent,
-    ExtensionFlag, ExtensionRuntime, LoadExtensionsResult, RegisteredCommand, RegisteredTool,
-    ToolDefinition,
+    ExtensionFlag, ExtensionRuntime, LoadExtensionsResult, PendingProviderAction,
+    RegisteredCommand, RegisteredTool, ToolDefinition,
 };
 use super::{
     emit_before_agent_start, emit_before_provider_request, emit_context, emit_input,
@@ -18,6 +18,7 @@ use super::{
 use crate::auth_storage::AuthStorageBackend;
 use crate::model_registry::ModelRegistry;
 use crate::slash_commands::{extension_commands, SlashCommandInfo};
+use ai::ProviderRegistry;
 use std::collections::BTreeMap;
 
 pub struct ExtensionRunner {
@@ -36,7 +37,7 @@ impl ExtensionRunner {
     }
 
     pub fn from_loaded_resources(result: &LoadExtensionsResult) -> Self {
-        Self::new(result.extensions.clone(), ExtensionRuntime::default())
+        Self::new(result.extensions.clone(), result.runtime.clone())
     }
 
     pub fn extensions(&self) -> &[Extension] {
@@ -49,6 +50,10 @@ impl ExtensionRunner {
 
     pub fn runtime_mut(&mut self) -> &mut ExtensionRuntime {
         &mut self.runtime
+    }
+
+    pub fn invalidate(&self, message: Option<String>) {
+        self.runtime.invalidate(message);
     }
 
     pub fn create_context(&self, extension: &Extension) -> ExtensionContext {
@@ -161,11 +166,11 @@ impl ExtensionRunner {
     }
 
     pub fn set_flag_value(&mut self, name: impl Into<String>, value: Value) {
-        self.runtime.flag_values.insert(name.into(), value);
+        self.runtime.set_flag_value(name, value);
     }
 
     pub fn flag_values(&self) -> BTreeMap<String, Value> {
-        self.runtime.flag_values.clone()
+        self.runtime.flag_values()
     }
 
     pub fn registered_commands(&self) -> Vec<RegisteredCommand> {
@@ -216,18 +221,51 @@ impl ExtensionRunner {
         &mut self,
         model_registry: &mut ModelRegistry<B>,
     ) {
-        let pending = std::mem::take(&mut self.runtime.pending_provider_registrations);
-        for registration in pending {
-            let config = to_model_provider_config(registration.config);
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                model_registry.register_provider(registration.name, config);
-            }));
-            if result.is_err() {
-                self.report_error(ExtensionError {
-                    extension_path: registration.extension_path,
-                    event: Some("register_provider".to_string()),
-                    message: "Provider registration panicked".to_string(),
-                });
+        self.flush_pending_provider_registrations_inner(model_registry, None);
+    }
+
+    pub fn flush_pending_provider_registrations_with_api_providers<B: AuthStorageBackend>(
+        &mut self,
+        model_registry: &mut ModelRegistry<B>,
+        provider_registry: &mut ProviderRegistry,
+    ) {
+        self.flush_pending_provider_registrations_inner(model_registry, Some(provider_registry));
+    }
+
+    fn flush_pending_provider_registrations_inner<B: AuthStorageBackend>(
+        &mut self,
+        model_registry: &mut ModelRegistry<B>,
+        mut provider_registry: Option<&mut ProviderRegistry>,
+    ) {
+        let pending = self.runtime.take_pending_provider_actions();
+        for action in pending {
+            match action {
+                PendingProviderAction::Register(registration) => {
+                    let config = to_model_provider_config(registration.config);
+                    match model_registry.try_register_provider(registration.name.clone(), config) {
+                        Ok(()) => {
+                            if let Some(provider_registry) = provider_registry.as_deref_mut() {
+                                model_registry.apply_registered_api_providers(provider_registry);
+                            }
+                        }
+                        Err(message) => {
+                            self.report_error(ExtensionError {
+                                extension_path: registration.extension_path,
+                                event: Some("register_provider".to_string()),
+                                message,
+                            });
+                        }
+                    }
+                }
+                PendingProviderAction::Unregister {
+                    name,
+                    extension_path: _,
+                } => {
+                    if let Some(provider_registry) = provider_registry.as_deref_mut() {
+                        model_registry.unregister_api_provider(provider_registry, &name);
+                    }
+                    model_registry.unregister_provider(&name);
+                }
             }
         }
     }
@@ -237,6 +275,16 @@ impl ExtensionRunner {
         model_registry: &mut ModelRegistry<B>,
         provider: &str,
     ) {
+        model_registry.unregister_provider(provider);
+    }
+
+    pub fn unregister_provider_with_api_providers<B: AuthStorageBackend>(
+        &self,
+        model_registry: &mut ModelRegistry<B>,
+        provider_registry: &mut ProviderRegistry,
+        provider: &str,
+    ) {
+        model_registry.unregister_api_provider(provider_registry, provider);
         model_registry.unregister_provider(provider);
     }
 

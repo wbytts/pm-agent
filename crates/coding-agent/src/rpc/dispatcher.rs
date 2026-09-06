@@ -2,7 +2,9 @@ use agent::AgentMessage;
 use ai::{Model, ModelThinkingLevel};
 
 use crate::bash_executor::BashResult;
-use crate::rpc::types::{QueueMode, RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand};
+use crate::rpc::types::{
+    ForkPosition, QueueMode, RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand,
+};
 use crate::session_manager::{ForkMessage, SessionStats};
 
 pub trait RpcSessionBackend {
@@ -21,6 +23,9 @@ pub trait RpcSessionBackend {
         _parent_session: Option<String>,
     ) -> Result<serde_json::Value, String> {
         Err("new_session is not supported by this RPC backend".to_string())
+    }
+    fn reload(&mut self) -> Result<serde_json::Value, String> {
+        Err("reload is not supported by this RPC backend".to_string())
     }
     fn state(&self) -> Result<RpcSessionState, String>;
     fn set_model(&mut self, provider: String, model_id: String) -> Result<Model, String>;
@@ -64,22 +69,55 @@ pub trait RpcSessionBackend {
     fn session_stats(&self) -> Result<SessionStats, String> {
         Err("get_session_stats is not supported by this RPC backend".to_string())
     }
+    fn session_info(&self) -> Result<serde_json::Value, String> {
+        Err("get_session_info is not supported by this RPC backend".to_string())
+    }
+    fn changelog(&self) -> Result<serde_json::Value, String> {
+        Err("get_changelog is not supported by this RPC backend".to_string())
+    }
     fn export_html(&mut self, _output_path: Option<String>) -> Result<String, String> {
         Err("export_html is not supported by this RPC backend".to_string())
+    }
+    fn share_session(&mut self) -> Result<serde_json::Value, String> {
+        Err("share_session is not supported by this RPC backend".to_string())
     }
     fn switch_session(&mut self, _session_path: String) -> Result<serde_json::Value, String> {
         Err("switch_session is not supported by this RPC backend".to_string())
     }
-    fn fork(&mut self, _entry_id: String) -> Result<serde_json::Value, String> {
+    fn import_session(
+        &mut self,
+        _input_path: String,
+        _cwd_override: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("import_session is not supported by this RPC backend".to_string())
+    }
+    fn fork(
+        &mut self,
+        _entry_id: String,
+        _position: ForkPosition,
+    ) -> Result<serde_json::Value, String> {
         Err("fork is not supported by this RPC backend".to_string())
     }
     fn clone_session(&mut self) -> Result<serde_json::Value, String> {
         Err("clone is not supported by this RPC backend".to_string())
     }
+    fn navigate_tree(
+        &mut self,
+        _target_id: String,
+        _summarize: bool,
+        _custom_instructions: Option<String>,
+        _replace_instructions: bool,
+        _label: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        Err("navigate_tree is not supported by this RPC backend".to_string())
+    }
     fn fork_messages(&self) -> Result<Vec<ForkMessage>, String> {
         Err("get_fork_messages is not supported by this RPC backend".to_string())
     }
     fn last_assistant_text(&self) -> Result<Option<String>, String>;
+    fn copy_last_assistant_text(&mut self) -> Result<String, String> {
+        Err("copy_last_assistant_text is not supported by this RPC backend".to_string())
+    }
     fn set_session_name(&mut self, _name: String) -> Result<(), String> {
         Err("set_session_name is not supported by this RPC backend".to_string())
     }
@@ -136,6 +174,7 @@ impl<B: RpcSessionBackend> RpcDispatcher<B> {
             RpcCommand::NewSession { parent_session, .. } => {
                 self.backend.new_session(parent_session).map(Some)
             }
+            RpcCommand::Reload { .. } => self.backend.reload().map(Some),
             RpcCommand::GetState { .. } => to_value(self.backend.state()?),
             RpcCommand::SetModel {
                 provider, model_id, ..
@@ -185,19 +224,52 @@ impl<B: RpcSessionBackend> RpcDispatcher<B> {
                 Ok(None)
             }
             RpcCommand::GetSessionStats { .. } => to_value(self.backend.session_stats()?),
+            RpcCommand::GetSessionInfo { .. } => self.backend.session_info().map(Some),
+            RpcCommand::GetChangelog { .. } => self.backend.changelog().map(Some),
             RpcCommand::ExportHtml { output_path, .. } => {
                 to_value(serde_json::json!({ "path": self.backend.export_html(output_path)? }))
             }
+            RpcCommand::ShareSession { .. } => self.backend.share_session().map(Some),
             RpcCommand::SwitchSession { session_path, .. } => {
                 self.backend.switch_session(session_path).map(Some)
             }
-            RpcCommand::Fork { entry_id, .. } => self.backend.fork(entry_id).map(Some),
+            RpcCommand::ImportSession {
+                input_path,
+                cwd_override,
+                ..
+            } => self
+                .backend
+                .import_session(input_path, cwd_override)
+                .map(Some),
+            RpcCommand::Fork {
+                entry_id, position, ..
+            } => self.backend.fork(entry_id, position).map(Some),
             RpcCommand::Clone { .. } => self.backend.clone_session().map(Some),
+            RpcCommand::NavigateTree {
+                target_id,
+                summarize,
+                custom_instructions,
+                replace_instructions,
+                label,
+                ..
+            } => self
+                .backend
+                .navigate_tree(
+                    target_id,
+                    summarize,
+                    custom_instructions,
+                    replace_instructions,
+                    label,
+                )
+                .map(Some),
             RpcCommand::GetForkMessages { .. } => {
                 to_value(serde_json::json!({ "messages": self.backend.fork_messages()? }))
             }
             RpcCommand::GetLastAssistantText { .. } => {
                 to_value(serde_json::json!({ "text": self.backend.last_assistant_text()? }))
+            }
+            RpcCommand::CopyLastAssistantText { .. } => {
+                to_value(serde_json::json!({ "text": self.backend.copy_last_assistant_text()? }))
             }
             RpcCommand::SetSessionName { name, .. } => {
                 let name = name.trim().to_string();
@@ -238,6 +310,11 @@ mod tests {
         retry_aborted: bool,
         aborted: bool,
         bash_aborted: bool,
+        reloaded: bool,
+        navigated_tree: Option<String>,
+        imported_session: Option<String>,
+        copied_text: Option<String>,
+        shared: bool,
     }
 
     impl Default for TestBackend {
@@ -252,6 +329,11 @@ mod tests {
                 retry_aborted: false,
                 aborted: false,
                 bash_aborted: false,
+                reloaded: false,
+                navigated_tree: None,
+                imported_session: None,
+                copied_text: None,
+                shared: false,
             }
         }
     }
@@ -276,6 +358,45 @@ mod tests {
         fn abort(&mut self) -> Result<(), String> {
             self.aborted = true;
             Ok(())
+        }
+
+        fn reload(&mut self) -> Result<serde_json::Value, String> {
+            self.reloaded = true;
+            Ok(serde_json::json!({
+                "cancelled": false,
+            }))
+        }
+
+        fn navigate_tree(
+            &mut self,
+            target_id: String,
+            summarize: bool,
+            custom_instructions: Option<String>,
+            replace_instructions: bool,
+            label: Option<String>,
+        ) -> Result<serde_json::Value, String> {
+            self.navigated_tree = Some(target_id.clone());
+            Ok(serde_json::json!({
+                "cancelled": false,
+                "targetId": target_id,
+                "summarize": summarize,
+                "customInstructions": custom_instructions,
+                "replaceInstructions": replace_instructions,
+                "label": label,
+            }))
+        }
+
+        fn import_session(
+            &mut self,
+            input_path: String,
+            cwd_override: Option<String>,
+        ) -> Result<serde_json::Value, String> {
+            self.imported_session = Some(input_path.clone());
+            Ok(serde_json::json!({
+                "cancelled": false,
+                "inputPath": input_path,
+                "cwdOverride": cwd_override,
+            }))
         }
 
         fn state(&self) -> Result<RpcSessionState, String> {
@@ -335,6 +456,41 @@ mod tests {
                 .rev()
                 .find(|message| message.role == MessageRole::Assistant)
                 .map(|message| message.content.clone()))
+        }
+
+        fn copy_last_assistant_text(&mut self) -> Result<String, String> {
+            self.copied_text = Some("assistant".to_string());
+            Ok("assistant".to_string())
+        }
+
+        fn session_info(&self) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({
+                "name": "Demo",
+                "text": "Session Info\n\nName: Demo",
+                "stats": {
+                    "sessionFile": null,
+                    "sessionId": "session",
+                },
+                "cost": 0.0,
+                "sessionInfoReturned": true,
+            }))
+        }
+
+        fn changelog(&self) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({
+                "title": "What's New",
+                "markdown": "## 1.0.0\n- first",
+                "entries": [],
+            }))
+        }
+
+        fn share_session(&mut self) -> Result<serde_json::Value, String> {
+            self.shared = true;
+            Ok(serde_json::json!({
+                "previewUrl": "https://pi.dev/session/#abc123",
+                "gistUrl": "https://gist.github.com/alice/abc123",
+                "gistId": "abc123",
+            }))
         }
 
         fn set_session_name(&mut self, name: String) -> Result<(), String> {
@@ -471,6 +627,142 @@ mod tests {
         });
         assert!(response.is_success());
         assert!(dispatcher.backend().bash_aborted);
+    }
+
+    #[test]
+    fn dispatches_reload_like_pi() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::Reload {
+            id: Some("reload".to_string()),
+        });
+
+        assert!(response.is_success());
+        assert!(dispatcher.backend().reloaded);
+        let RpcResponse::Response { command, data, .. } = response;
+        assert_eq!(command, "reload");
+        assert_eq!(data.expect("reload data")["cancelled"], false);
+    }
+
+    #[test]
+    fn dispatches_navigate_tree_like_pi() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::NavigateTree {
+            id: Some("tree".to_string()),
+            target_id: "entry-1".to_string(),
+            summarize: true,
+            custom_instructions: Some("focus".to_string()),
+            replace_instructions: true,
+            label: Some("checkpoint".to_string()),
+        });
+
+        assert!(response.is_success());
+        assert_eq!(
+            dispatcher.backend().navigated_tree.as_deref(),
+            Some("entry-1")
+        );
+        let RpcResponse::Response { command, data, .. } = response;
+        let data = data.expect("navigate tree data");
+        assert_eq!(command, "navigate_tree");
+        assert_eq!(data["targetId"], "entry-1");
+        assert_eq!(data["summarize"], true);
+        assert_eq!(data["customInstructions"], "focus");
+        assert_eq!(data["replaceInstructions"], true);
+        assert_eq!(data["label"], "checkpoint");
+    }
+
+    #[test]
+    fn dispatches_import_session_for_crates_runtime() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::ImportSession {
+            id: Some("import".to_string()),
+            input_path: "/tmp/session.jsonl".to_string(),
+            cwd_override: Some("/tmp/project".to_string()),
+        });
+
+        assert!(response.is_success());
+        assert_eq!(
+            dispatcher.backend().imported_session.as_deref(),
+            Some("/tmp/session.jsonl")
+        );
+        let RpcResponse::Response { command, data, .. } = response;
+        let data = data.expect("import data");
+        assert_eq!(command, "import_session");
+        assert_eq!(data["cancelled"], false);
+        assert_eq!(data["inputPath"], "/tmp/session.jsonl");
+        assert_eq!(data["cwdOverride"], "/tmp/project");
+    }
+
+    #[test]
+    fn dispatches_copy_last_assistant_text_like_pi_copy_command() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::CopyLastAssistantText {
+            id: Some("copy".to_string()),
+        });
+
+        assert!(response.is_success());
+        assert_eq!(
+            dispatcher.backend().copied_text.as_deref(),
+            Some("assistant")
+        );
+        let RpcResponse::Response { command, data, .. } = response;
+        let data = data.expect("copy data");
+        assert_eq!(command, "copy_last_assistant_text");
+        assert_eq!(data["text"], "assistant");
+    }
+
+    #[test]
+    fn dispatches_share_session_like_pi_share_command() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::ShareSession {
+            id: Some("share".to_string()),
+        });
+
+        assert!(response.is_success());
+        assert!(dispatcher.backend().shared);
+        let RpcResponse::Response { command, data, .. } = response;
+        let data = data.expect("share data");
+        assert_eq!(command, "share_session");
+        assert_eq!(data["previewUrl"], "https://pi.dev/session/#abc123");
+        assert_eq!(data["gistUrl"], "https://gist.github.com/alice/abc123");
+        assert_eq!(data["gistId"], "abc123");
+    }
+
+    #[test]
+    fn dispatches_get_session_info_like_pi_session_command() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::GetSessionInfo {
+            id: Some("session-info".to_string()),
+        });
+
+        assert!(response.is_success());
+        let RpcResponse::Response { command, data, .. } = response;
+        let data = data.expect("session info data");
+        assert_eq!(command, "get_session_info");
+        assert_eq!(data["name"], "Demo");
+        assert_eq!(data["text"], "Session Info\n\nName: Demo");
+        assert_eq!(data["stats"]["sessionId"], "session");
+    }
+
+    #[test]
+    fn dispatches_get_changelog_like_pi_changelog_command() {
+        let mut dispatcher = RpcDispatcher::new(TestBackend::default());
+
+        let response = dispatcher.handle_command(RpcCommand::GetChangelog {
+            id: Some("changelog".to_string()),
+        });
+
+        assert!(response.is_success());
+        let RpcResponse::Response { command, data, .. } = response;
+        let data = data.expect("changelog data");
+        assert_eq!(command, "get_changelog");
+        assert_eq!(data["title"], "What's New");
+        assert_eq!(data["markdown"], "## 1.0.0\n- first");
     }
 
     #[test]

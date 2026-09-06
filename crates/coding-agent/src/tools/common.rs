@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::tools::truncate::{format_size, truncate_head, TruncationOptions, DEFAULT_MAX_BYTES};
+use crate::tools::truncate::{
+    format_size, truncate_head, TruncationOptions, TruncationResult, DEFAULT_MAX_BYTES,
+};
 use crate::types::{CodingAgentResult, CodingToolResult};
 
 pub fn success(output: impl Into<String>) -> CodingAgentResult<CodingToolResult> {
@@ -135,7 +137,16 @@ pub fn collect_temp_workspace(prefix: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{id}"))
 }
 
-pub fn truncate_list_output(raw_output: &str, mut notices: Vec<String>) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListOutputTruncation {
+    pub output: String,
+    pub truncation: TruncationResult,
+}
+
+pub fn truncate_list_output_with_details(
+    raw_output: &str,
+    mut notices: Vec<String>,
+) -> ListOutputTruncation {
     let truncation = truncate_head(
         raw_output,
         TruncationOptions {
@@ -147,11 +158,11 @@ pub fn truncate_list_output(raw_output: &str, mut notices: Vec<String>) -> Strin
         notices.push(format!("{} limit reached", format_size(DEFAULT_MAX_BYTES)));
     }
 
-    let mut output = truncation.content;
+    let mut output = truncation.content.clone();
     if !notices.is_empty() {
         output.push_str(&format!("\n\n[{}]", notices.join(". ")));
     }
-    output
+    ListOutputTruncation { output, truncation }
 }
 
 fn glob_match_chars(value: &[char], pattern: &[char]) -> bool {
